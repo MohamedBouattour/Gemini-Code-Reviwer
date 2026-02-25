@@ -4,7 +4,14 @@ import fg from "fast-glob";
 import fs from "fs/promises";
 
 export async function extractSkills(baseDir: string): Promise<string> {
-  const patterns = [".skills/**/*.md"];
+  const patterns = [
+    ".skills/**/*.md",
+    ".agents/**/*.md",
+    ".agent/**/*.md",
+    "_agents/**/*.md",
+    "_agent/**/*.md",
+    ".gemini/**/*.md",
+  ];
 
   const files = await fg(patterns, {
     cwd: baseDir,

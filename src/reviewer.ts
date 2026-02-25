@@ -12,6 +12,15 @@ import open from "open";
 import { readFileSync, promises as fs } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
+import {
+  GeminiModel,
+  OAUTH_SCOPE,
+  HTTP_REDIRECT,
+  SIGN_IN_SUCCESS_URL,
+  SIGN_IN_FAILURE_URL,
+  CODE_ASSIST_BASE_URL,
+  CHAR_THRESHOLD,
+} from "./constants.js";
 
 // ---------------------------------------------------------------------------
 // Reuse from @google/gemini-cli-core (deep imports to avoid heavy barrel init)
@@ -65,25 +74,6 @@ function getCoreOAuthCredentials(): OAuthCoreCredentials {
   };
   return _cachedCoreCredentials;
 }
-
-// Non-secret constants (safe to keep in source)
-const OAUTH_SCOPE = [
-  "https://www.googleapis.com/auth/cloud-platform",
-  "https://www.googleapis.com/auth/userinfo.email",
-  "https://www.googleapis.com/auth/userinfo.profile",
-];
-const HTTP_REDIRECT = 301;
-const SIGN_IN_SUCCESS_URL =
-  "https://developers.google.com/gemini-code-assist/auth_success_gemini";
-const SIGN_IN_FAILURE_URL =
-  "https://developers.google.com/gemini-code-assist/auth_failure_gemini";
-
-// ---------------------------------------------------------------------------
-// Gemini Code Assist endpoint — same as what gemini-cli uses internally.
-// ---------------------------------------------------------------------------
-const CODE_ASSIST_ENDPOINT = "https://cloudcode-pa.googleapis.com";
-const CODE_ASSIST_API_VERSION = "v1internal";
-const CODE_ASSIST_BASE_URL = `${CODE_ASSIST_ENDPOINT}/${CODE_ASSIST_API_VERSION}`;
 
 // ---------------------------------------------------------------------------
 // Credential caching — reads/writes the SAME file gemini-cli uses:
@@ -390,7 +380,61 @@ export async function runReview(
     process.exit(0);
   }
 
-  spinner.succeed(`Found ${files.length} source files to review.`);
+  const outputDir = path.join(baseDir, "gemini-code-reviewer");
+  try {
+    await fs.mkdir(outputDir, { recursive: true });
+  } catch (err: any) {
+    if (err.code !== "EEXIST") {
+      logDebug(
+        `Could not create output directory ${outputDir}: ${err.message}`,
+      );
+    }
+  }
+
+  const statePath = path.join(outputDir, ".gemini-code-reviewer.json");
+  let previousState: any = null;
+  try {
+    const rawState = await fs.readFile(statePath, "utf-8");
+    previousState = JSON.parse(rawState);
+  } catch (e) {}
+
+  const currentFileHashes: Record<string, string> = {};
+  const changedFiles = [];
+  const unchangedFiles: string[] = [];
+
+  for (const f of files) {
+    const hash = crypto.createHash("sha256").update(f.content).digest("hex");
+    currentFileHashes[f.filePath] = hash;
+    if (
+      previousState &&
+      previousState.fileHashes &&
+      previousState.fileHashes[f.filePath] === hash
+    ) {
+      unchangedFiles.push(f.filePath);
+    } else {
+      changedFiles.push(f);
+    }
+  }
+
+  let oldFindings: any[] = [];
+  if (previousState && previousState.findings) {
+    oldFindings = previousState.findings.filter((finding: any) =>
+      unchangedFiles.includes(finding.file),
+    );
+  }
+
+  if (changedFiles.length === 0 && previousState) {
+    spinner.succeed(
+      "No files have changed since the last review. Using cached report.",
+    );
+    const consoleOutput = generateMarkdownReport(previousState, true);
+    console.log("\n\n" + consoleOutput);
+    process.exit(0);
+  }
+
+  spinner.succeed(
+    `Found ${files.length} source files (${changedFiles.length} to scan).`,
+  );
   spinner.start("Loading skills context (Markdowns)...");
 
   const skillsContext = await extractSkills(baseDir);
@@ -456,8 +500,6 @@ export async function runReview(
     ],
   };
 
-  const CHAR_THRESHOLD = 500000;
-
   function estimateTokenCount(text: string): number {
     return Math.ceil(text.length / 4);
   }
@@ -468,7 +510,7 @@ export async function runReview(
   let currentSegment = "Review the following code:\n\n";
   let currentFiles: string[] = [];
 
-  for (const f of files) {
+  for (const f of changedFiles) {
     const fileXml = `<file path="${f.filePath}">\n${f.content}\n</file>\n\n`;
     if (
       currentSegment.length + fileXml.length > CHAR_THRESHOLD &&
@@ -490,6 +532,24 @@ export async function runReview(
   logDebug(
     `Created ${segments.length} segments (~${CHAR_THRESHOLD} char limit).`,
   );
+
+  if (debug) {
+    const payloadFile = path.join(
+      outputDir,
+      ".gemini-code-reviewer.payload.json",
+    );
+    try {
+      await fs.writeFile(
+        payloadFile,
+        JSON.stringify(segments, null, 2),
+        "utf-8",
+      );
+      logDebug(`Debug payload chunks written to ${payloadFile}`);
+    } catch (err: any) {
+      logDebug(`Warning: Could not write debug payload file: ${err.message}`);
+    }
+  }
+
   spinner.succeed(`Created ${segments.length} segments for review.`);
   spinner.start("Calling Gemini Code Assist API to review code segments...");
 
@@ -511,11 +571,8 @@ export async function runReview(
       );
       segmentFiles.forEach((f) => console.log(`  - ${f}`));
 
-      // use a free/low cost model (infinite context) for large ones to not impact quotas; use pro for harder/smaller tasks
-      const segmentModel =
-        estimateTokenCount(segmentPayload) > 50000
-          ? "gemini-2.5-flash"
-          : "gemini-2.5-pro";
+      // Always use the flash model according to requirements
+      const segmentModel = GeminiModel.FLASH;
 
       logDebug(
         `Segment ${i + 1}/${segments.length} — ~${estimateTokenCount(segmentPayload)} tokens, model: ${segmentModel}`,
@@ -578,13 +635,23 @@ export async function runReview(
   spinner.succeed("Review complete!");
 
   const finalScore =
-    batchesSucceeded > 0 ? Math.round(totalScore / batchesSucceeded) : 0;
+    batchesSucceeded > 0
+      ? Math.round(totalScore / batchesSucceeded)
+      : previousState?.score || 0;
   const finalDuplication =
-    batchesSucceeded > 0 ? totalDuplication / batchesSucceeded : 0;
+    batchesSucceeded > 0
+      ? totalDuplication / batchesSucceeded
+      : previousState?.codeDuplicationPercentage || 0;
   const finalComplexity =
-    batchesSucceeded > 0 ? totalComplexity / batchesSucceeded : 0;
+    batchesSucceeded > 0
+      ? totalComplexity / batchesSucceeded
+      : previousState?.cyclomaticComplexity || 0;
   const finalMaintainability =
-    batchesSucceeded > 0 ? totalMaintainability / batchesSucceeded : 0;
+    batchesSucceeded > 0
+      ? totalMaintainability / batchesSucceeded
+      : previousState?.maintainabilityIndex || 0;
+
+  allFindings.push(...oldFindings);
 
   const finalReport: CodeReviewResponse = {
     score: finalScore,
@@ -594,11 +661,21 @@ export async function runReview(
     findings: allFindings,
   };
 
+  const newState = {
+    ...finalReport,
+    fileHashes: currentFileHashes,
+  };
+  try {
+    await fs.writeFile(statePath, JSON.stringify(newState, null, 2), "utf-8");
+  } catch (err: any) {
+    logDebug(`Could not save cache to ${statePath}: ${err.message}`);
+  }
+
   const consoleOutput = generateMarkdownReport(finalReport, true);
   console.log("\n\n" + consoleOutput);
 
   const markdownOutput = generateMarkdownReport(finalReport, false);
-  const reportPath = path.join(baseDir, "gemini-code-reviewer.md");
+  const reportPath = path.join(outputDir, "gemini-code-reviewer.md");
   try {
     await fs.writeFile(reportPath, markdownOutput, "utf-8");
     console.log(`\nReport successfully saved to ${reportPath}`);
