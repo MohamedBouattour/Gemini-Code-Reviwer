@@ -4,7 +4,7 @@ import fg from "fast-glob";
 import fs from "fs/promises";
 
 export async function extractSkills(baseDir: string): Promise<string> {
-  const patterns = ["*.md", ".skills/**/*.md"];
+  const patterns = [".skills/**/*.md"];
 
   const files = await fg(patterns, {
     cwd: baseDir,
@@ -23,7 +23,10 @@ export async function extractSkills(baseDir: string): Promise<string> {
     }
   }
 
+  const prefix =
+    "You are an elite code reviewer. Your goal is to evaluate the following code strictly against these organizational standards.";
+
   return allSkills.trim()
-    ? `Follow these organizational best practices and skills:\n${allSkills}`
-    : "No internal skills provided. Rely on standard industry best practices for all languages present.";
+    ? `${prefix}\n${allSkills}`
+    : `${prefix}\nNo internal skills provided. Rely on standard industry best practices for all languages present.`;
 }

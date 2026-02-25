@@ -125,12 +125,19 @@ export async function runReview(
     },
   });
 
+  const CHAR_THRESHOLD = 30000;
+
+  function estimateTokenCount(text: string): number {
+    return Math.ceil(text.length / 4);
+  }
+
   const responseSchema: Schema = {
     type: Type.OBJECT,
     properties: {
-      overallScore: {
+      score: {
         type: Type.NUMBER,
-        description: "The overall logic and architectural score from 0 to 100.",
+        description:
+          "The logic and architectural score from 0 to 100 for this batch.",
       },
       findings: {
         type: Type.ARRAY,
@@ -139,57 +146,112 @@ export async function runReview(
           properties: {
             file: { type: Type.STRING, description: "The exact file path" },
             line: {
-              type: Type.STRING,
-              description: "Line numbers (e.g. 5 or 12-15)",
+              type: Type.NUMBER,
+              description: "Line number",
             },
-            code: {
+            snippet: {
               type: Type.STRING,
               description: "The specific snippet being flagged",
             },
-            feedback: {
+            suggestion: {
               type: Type.STRING,
               description:
                 "Idea, bug, or refactoring suggestion based on skills",
             },
+            priority: {
+              type: Type.STRING,
+              description: "Priority of the finding",
+              enum: ["low", "medium", "high"],
+            },
           },
-          required: ["file", "line", "code", "feedback"],
+          required: ["file", "line", "snippet", "suggestion", "priority"],
         },
       },
     },
-    required: ["overallScore", "findings"],
+    required: ["score", "findings"],
   };
 
-  let payload = "Review the following code:\n\n";
+  spinner.start("Chunking files into batch segments...");
+
+  const segments: string[] = [];
+  let currentSegment = "Review the following code:\n\n";
+
   for (const f of files) {
-    payload += `--- FILE BEGIN: ${f.filePath} ---\n${f.content}\n--- FILE END ---\n\n`;
+    const fileXml = `<file path="${f.filePath}">\n${f.content}\n</file>\n\n`;
+    if (
+      currentSegment.length + fileXml.length > CHAR_THRESHOLD &&
+      currentSegment !== "Review the following code:\n\n"
+    ) {
+      segments.push(currentSegment);
+      currentSegment = "Review the following code:\n\n" + fileXml;
+    } else {
+      currentSegment += fileXml;
+    }
   }
 
-  try {
-    logDebug(
-      `Calling generateContent on model: gemini-1.5-pro... payload length: ${payload.length}`,
-    );
-    const response = await ai.models.generateContent({
-      model: "gemini-1.5-pro",
-      contents: payload,
-      config: {
-        systemInstruction: `You are an expert Google Code Reviewer.\n\n${skillsContext}`,
-        responseMimeType: "application/json",
-        responseSchema: responseSchema,
-        temperature: 0.2,
-      },
-    });
+  if (currentSegment !== "Review the following code:\n\n") {
+    segments.push(currentSegment);
+  }
 
-    logDebug("Successfully received response from Gemini API.");
-    spinner.succeed("Review complete!");
+  logDebug(
+    `Created ${segments.length} segments based on a ~${CHAR_THRESHOLD} character limit.`,
+  );
+  spinner.succeed(`Created ${segments.length} segments for review.`);
+  spinner.start("Calling Gemini API (Vertex AI) to review code segments...");
 
-    const responseText = response.text || "{}";
-    const reportData: CodeReviewResponse = JSON.parse(responseText);
+  let totalScore = 0;
+  let allFindings: any[] = [];
+  let batchesSucceeded = 0;
 
-    const markdownOutput = generateMarkdownReport(reportData);
-    console.log("\n\n" + markdownOutput);
-  } catch (err: any) {
-    spinner.fail("Gemini API call failed.");
-    console.error(err?.message || err);
+  for (let i = 0; i < segments.length; i++) {
+    try {
+      const segmentPayload = segments[i];
+      const estimatedTokens = estimateTokenCount(segmentPayload);
+      logDebug(
+        `Sending segment ${i + 1}/${segments.length}, tokens estimated: ${estimatedTokens}`,
+      );
+      const response = await ai.models.generateContent({
+        model: "gemini-1.5-pro",
+        contents: segmentPayload,
+        config: {
+          systemInstruction: skillsContext,
+          responseMimeType: "application/json",
+          responseSchema: responseSchema,
+          temperature: 0.2,
+        },
+      });
+
+      logDebug(`Successfully received response for segment ${i + 1}.`);
+      const responseText = response.text || "{}";
+      const reportData = JSON.parse(responseText);
+
+      if (typeof reportData.score === "number") {
+        totalScore += reportData.score;
+        batchesSucceeded++;
+      }
+
+      if (reportData.findings && Array.isArray(reportData.findings)) {
+        allFindings.push(...reportData.findings);
+      }
+    } catch (err: any) {
+      logDebug(`Error processing segment ${i + 1}: ${err?.message || err}`);
+    }
+  }
+
+  if (batchesSucceeded === 0 && segments.length > 0) {
+    spinner.fail("Gemini API call failed for all batches.");
     process.exit(1);
   }
+
+  spinner.succeed("Review complete!");
+
+  const finalScore =
+    batchesSucceeded > 0 ? Math.round(totalScore / batchesSucceeded) : 0;
+  const finalReport: CodeReviewResponse = {
+    score: finalScore,
+    findings: allFindings,
+  };
+
+  const markdownOutput = generateMarkdownReport(finalReport);
+  console.log("\n\n" + markdownOutput);
 }
