@@ -1,7 +1,11 @@
 // Copyright 2026 Google LLC
 
 import { OAuth2Client } from "google-auth-library";
-import { scanCodeDirectory } from "./scanner.js";
+import {
+  scanCodeDirectory,
+  CodeFile,
+  findLineNumberToMatchSnippet,
+} from "./scanner.js";
 import { extractSkills } from "./skills.js";
 import { generateMarkdownReport, CodeReviewResponse } from "./formatter.js";
 import ora from "ora";
@@ -399,7 +403,7 @@ export async function runReview(
   } catch (e) {}
 
   const currentFileHashes: Record<string, string> = {};
-  const changedFiles = [];
+  const changedFiles: CodeFile[] = [];
   const unchangedFiles: string[] = [];
 
   for (const f of files) {
@@ -481,13 +485,25 @@ export async function runReview(
               description:
                 "Idea, bug, or refactoring suggestion based on skills",
             },
+            category: {
+              type: "STRING",
+              description:
+                "The focus area this finding belongs to (e.g., Naming, SOLID, Architecture, Performance, Other)",
+            },
             priority: {
               type: "STRING",
               description: "Priority of the finding",
               enum: ["low", "medium", "high"],
             },
           },
-          required: ["file", "line", "snippet", "suggestion", "priority"],
+          required: [
+            "file",
+            "line",
+            "snippet",
+            "suggestion",
+            "category",
+            "priority",
+          ],
         },
       },
     },
@@ -580,13 +596,24 @@ export async function runReview(
 
       // Request body following the Code Assist generateContent wire format:
       // { model, project, request: { contents, systemInstruction, generationConfig } }
+      const systemPrompt = `You are an expert AI code reviewer.
+Review the code thoroughly for:
+- Naming conventions and semantic names
+- SOLID principles and design patterns
+- Code benchmarks and performance optimization
+- Logic and architectural correctness
+
+When finding issues, give a very small, specific 'snippet' (a few words or one statement) so we can accurately locate it in the codebase.
+Additional context:
+${skillsContext}`;
+
       const requestBody = {
         model: segmentModel,
         project: cloudaicompanionProject,
         request: {
           systemInstruction: {
             role: "system",
-            parts: [{ text: skillsContext }],
+            parts: [{ text: systemPrompt }],
           },
           contents: [{ role: "user", parts: [{ text: segmentPayload }] }],
           generationConfig: {
@@ -620,6 +647,21 @@ export async function runReview(
       }
 
       if (reportData.findings && Array.isArray(reportData.findings)) {
+        reportData.findings.forEach((finding: any) => {
+          if (finding.file && finding.snippet) {
+            const fileMatch = changedFiles.find(
+              (f) => f.filePath === finding.file,
+            );
+            if (fileMatch) {
+              finding.line = findLineNumberToMatchSnippet(
+                fileMatch.originalContent,
+                finding.snippet,
+              );
+            }
+          } else if (!finding.line) {
+            finding.line = 1; // Fallback
+          }
+        });
         allFindings.push(...reportData.findings);
       }
     } catch (err: any) {
@@ -652,6 +694,16 @@ export async function runReview(
       : previousState?.maintainabilityIndex || 0;
 
   allFindings.push(...oldFindings);
+
+  // Sort findings by priority (high > medium > low), then by file alphabetically, then by line
+  const priorityMap: Record<string, number> = { high: 0, medium: 1, low: 2 };
+  allFindings.sort((a, b) => {
+    const pA = priorityMap[(a.priority || "low").toLowerCase()] ?? 3;
+    const pB = priorityMap[(b.priority || "low").toLowerCase()] ?? 3;
+    if (pA !== pB) return pA - pB;
+    if (a.file !== b.file) return (a.file || "").localeCompare(b.file || "");
+    return (a.line || 0) - (b.line || 0);
+  });
 
   const finalReport: CodeReviewResponse = {
     score: finalScore,

@@ -7,6 +7,7 @@ export interface CodeFinding {
   line: number;
   snippet: string;
   suggestion: string;
+  category?: string;
   priority: "low" | "medium" | "high";
 }
 
@@ -54,7 +55,8 @@ export function generateMarkdownReport(
       priorityLabel = priorityColor(priorityLabel);
     }
 
-    report += `### ${index + 1}. File: \`${finding.file}\` (Line: ${finding.line}) ${priorityLabel}\n`;
+    const categoryLabel = finding.category ? ` **[${finding.category}]**` : "";
+    report += `### ${index + 1}. File: \`${finding.file}\` (Line: ${finding.line}) ${priorityLabel}${categoryLabel}\n`;
     report += `\n**Code Snippet:**\n\`\`\`\n${finding.snippet}\n\`\`\`\n`;
     report += `**Suggestion:**\n${finding.suggestion}\n\n`;
     report += `---\n\n`;
