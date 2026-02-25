@@ -1,7 +1,6 @@
 // Copyright 2026 Google LLC
 
-import { GoogleAuth, OAuth2Client } from "google-auth-library";
-import { GoogleGenAI, Type, Schema } from "@google/genai";
+import { OAuth2Client } from "google-auth-library";
 import { scanCodeDirectory } from "./scanner.js";
 import { extractSkills } from "./skills.js";
 import { generateMarkdownReport, CodeReviewResponse } from "./formatter.js";
@@ -67,7 +66,11 @@ function getCoreOAuthCredentials(): OAuthCoreCredentials {
 }
 
 // Non-secret constants (safe to keep in source)
-const OAUTH_SCOPE = ["https://www.googleapis.com/auth/cloud-platform"];
+const OAUTH_SCOPE = [
+  "https://www.googleapis.com/auth/cloud-platform",
+  "https://www.googleapis.com/auth/userinfo.email",
+  "https://www.googleapis.com/auth/userinfo.profile",
+];
 const HTTP_REDIRECT = 301;
 const SIGN_IN_SUCCESS_URL =
   "https://developers.google.com/gemini-code-assist/auth_success_gemini";
@@ -75,14 +78,17 @@ const SIGN_IN_FAILURE_URL =
   "https://developers.google.com/gemini-code-assist/auth_failure_gemini";
 
 // ---------------------------------------------------------------------------
+// Gemini Code Assist endpoint — same as what gemini-cli uses internally.
+// ---------------------------------------------------------------------------
+const CODE_ASSIST_ENDPOINT = "https://cloudcode-pa.googleapis.com";
+const CODE_ASSIST_API_VERSION = "v1internal";
+const CODE_ASSIST_BASE_URL = `${CODE_ASSIST_ENDPOINT}/${CODE_ASSIST_API_VERSION}`;
+
+// ---------------------------------------------------------------------------
 // Credential caching — reads/writes the SAME file gemini-cli uses:
 //   ~/.gemini/oauth_creds.json  (via Storage.getOAuthCredsPath())
 // ---------------------------------------------------------------------------
 
-/**
- * Attempt to load cached OAuth credentials saved by gemini-cli.
- * Returns null if the file does not exist or is not readable.
- */
 async function loadCachedCredentials(
   logDebug: (msg: string) => void,
 ): Promise<Record<string, unknown> | null> {
@@ -98,10 +104,6 @@ async function loadCachedCredentials(
   }
 }
 
-/**
- * Save OAuth credentials to the same location gemini-cli uses,
- * so future invocations (of either tool) skip the browser step.
- */
 async function saveCachedCredentials(
   credentials: Record<string, unknown>,
   logDebug: (msg: string) => void,
@@ -120,12 +122,12 @@ async function saveCachedCredentials(
 }
 
 /**
- * Launch a one-shot browser-based OAuth2 flow (last resort).
- * Mirrors gemini-cli's authWithWeb implementation.
+ * Launch a browser-based OAuth2 flow using the same credentials as gemini-cli.
+ * Returns an authenticated OAuth2Client with tokens set and persisted.
  */
 async function browserOAuthFlow(
   logDebug: (msg: string) => void,
-): Promise<string> {
+): Promise<OAuth2Client> {
   const { clientId, clientSecret } = getCoreOAuthCredentials();
   const client = new OAuth2Client(clientId, clientSecret);
 
@@ -158,19 +160,14 @@ async function browserOAuthFlow(
         if (qs.get("error")) {
           res.writeHead(HTTP_REDIRECT, { Location: SIGN_IN_FAILURE_URL });
           res.end();
-          const errorCode = qs.get("error");
-          const errorDescription =
-            qs.get("error_description") || "No additional details provided";
           reject(
-            new Error(`Google OAuth error: ${errorCode}. ${errorDescription}`),
+            new Error(
+              `Google OAuth error: ${qs.get("error")}. ${qs.get("error_description") || "No details"}`,
+            ),
           );
         } else if (qs.get("state") !== state) {
           res.end("State mismatch. Possible CSRF attack");
-          reject(
-            new Error(
-              "OAuth state mismatch. Possible CSRF attack or browser session issue.",
-            ),
-          );
+          reject(new Error("OAuth state mismatch. Possible CSRF attack."));
         } else if (qs.get("code")) {
           try {
             const { tokens } = await client.getToken({
@@ -178,51 +175,42 @@ async function browserOAuthFlow(
               redirect_uri: redirectUri,
             });
             client.setCredentials(tokens);
-
-            // Persist tokens so next run (and gemini-cli) can reuse them
             await saveCachedCredentials(
               tokens as unknown as Record<string, unknown>,
               logDebug,
             );
-
             res.writeHead(HTTP_REDIRECT, { Location: SIGN_IN_SUCCESS_URL });
             res.end();
-            resolve(tokens.access_token!);
+            resolve(client);
           } catch (error: any) {
             res.writeHead(HTTP_REDIRECT, { Location: SIGN_IN_FAILURE_URL });
             res.end();
             reject(
               new Error(
-                `Failed to exchange authorization code for tokens: ${error.message || error}`,
+                `Failed to exchange authorization code: ${error.message}`,
               ),
             );
           }
         } else {
           reject(
-            new Error(
-              "No authorization code received from Google OAuth. Please try authenticating again.",
-            ),
+            new Error("No authorization code received from Google OAuth."),
           );
         }
       } catch (e: any) {
-        reject(
-          new Error(
-            `Unexpected error during OAuth authentication: ${e.message || e}`,
-          ),
-        );
+        reject(new Error(`Unexpected error during OAuth: ${e.message}`));
       } finally {
         server.close();
       }
     });
 
     server.listen(port, host, async () => {
-      logDebug(`Opening browser at: ${authUrl}`);
+      logDebug(`Launching browser OAuth: ${authUrl}`);
+      console.log(`\nOpening browser for Google authentication...\n`);
       try {
         await open(authUrl);
       } catch (e) {
-        logDebug(`Failed to open browser automatically: ${e}`);
         console.log(
-          `\n\nPlease open the following URL in your browser:\n${authUrl}\n`,
+          `\nCould not open browser automatically. Please visit:\n\n${authUrl}\n`,
         );
       }
     });
@@ -234,59 +222,78 @@ async function browserOAuthFlow(
 }
 
 // ---------------------------------------------------------------------------
-// Authentication: 3-tier strategy
-//   1. Cached gemini-cli credentials (~/.gemini/oauth_creds.json)
-//   2. ADC (gcloud auth application-default login)
-//   3. Browser OAuth flow (last resort)
+// Authentication: cached credentials → browser OAuth fallback
 // ---------------------------------------------------------------------------
 
-interface AuthResult {
-  token: string;
-  quotaProjectId?: string | null;
+async function clearCachedCredentials(
+  logDebug: (msg: string) => void,
+): Promise<void> {
+  const credsPath: string = Storage.getOAuthCredsPath();
+  try {
+    await fs.rm(credsPath, { force: true });
+    logDebug(`Cleared cached credentials at ${credsPath}`);
+  } catch (e: any) {
+    logDebug(`Warning: could not clear credentials: ${e.message}`);
+  }
 }
 
 async function authenticate(
   logDebug: (msg: string) => void,
-): Promise<AuthResult> {
-  // --- Strategy 1: Reuse cached tokens from gemini-cli ---
-  const cached = await loadCachedCredentials(logDebug);
-  if (cached) {
-    const { clientId, clientSecret } = getCoreOAuthCredentials();
-    const client = new OAuth2Client(clientId, clientSecret);
-    client.setCredentials(cached as any);
-    try {
-      const { token } = await client.getAccessToken();
-      if (token) {
-        logDebug("Successfully reused cached gemini-cli credentials.");
-        return { token };
+  forceLogin: boolean = false,
+): Promise<OAuth2Client> {
+  const { clientId, clientSecret } = getCoreOAuthCredentials();
+
+  // Strategy 1: Reuse cached tokens, unless --login forces fresh auth
+  if (!forceLogin) {
+    const cached = await loadCachedCredentials(logDebug);
+    if (cached) {
+      const client = new OAuth2Client(clientId, clientSecret);
+      client.setCredentials(cached as any);
+      try {
+        const { token } = await client.getAccessToken();
+        if (token) {
+          logDebug("Reused cached credentials successfully.");
+          return client;
+        }
+      } catch (e: any) {
+        logDebug(`Cached credentials invalid/expired: ${e.message}`);
       }
-    } catch (e: any) {
-      logDebug(`Cached credentials expired or invalid: ${e.message}`);
     }
+  } else {
+    logDebug("--login flag set, clearing any cached credentials.");
+    await clearCachedCredentials(logDebug);
   }
 
-  // --- Strategy 2: Application Default Credentials (ADC) ---
-  const defaultAuth = new GoogleAuth({
-    scopes: ["https://www.googleapis.com/auth/cloud-platform"],
+  // Strategy 2: Browser OAuth (enterprise Google account)
+  logDebug("Launching browser OAuth flow...");
+  return browserOAuthFlow(logDebug);
+}
+
+// ---------------------------------------------------------------------------
+// Helper: make authenticated Code Assist API POST calls
+// ---------------------------------------------------------------------------
+
+async function codeAssistPost(
+  method: string,
+  body: unknown,
+  token: string,
+  logDebug: (msg: string) => void,
+): Promise<any> {
+  const endpoint = `${CODE_ASSIST_BASE_URL}:${method}`;
+  logDebug(`POST ${endpoint}`);
+  const res = await fetch(endpoint, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
   });
-  try {
-    const client = await defaultAuth.getClient();
-    const accessTokenResponse = await client.getAccessToken();
-    if (accessTokenResponse.token) {
-      logDebug("Successfully obtained token from ADC.");
-      return {
-        token: accessTokenResponse.token,
-        quotaProjectId: client.quotaProjectId,
-      };
-    }
-  } catch (e: any) {
-    logDebug(`ADC auth failed: ${e.message}`);
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(`HTTP ${res.status} on ${method}: ${errText}`);
   }
-
-  // --- Strategy 3: Browser OAuth flow (last resort) ---
-  logDebug("Falling back to browser-based OAuth2 flow...");
-  const token = await browserOAuthFlow(logDebug);
-  return { token };
+  return res.json();
 }
 
 // ---------------------------------------------------------------------------
@@ -295,137 +302,132 @@ async function authenticate(
 
 export async function runReview(
   baseDir: string,
-  location: string = "us-central1",
+  _location: string = "us-central1",
   debug: boolean = false,
+  forceLogin: boolean = false,
 ): Promise<void> {
   const spinner = ora("Setting up Google Cloud Auth...").start();
   const logDebug = (msg: string) => {
-    if (debug) {
-      console.log(`\n[DEBUG] ${msg}`);
-    }
+    if (debug) console.log(`\n[DEBUG] ${msg}`);
   };
 
-  logDebug("Starting authentication process...");
-
-  // --- Resolve project ID ---
-  let projectId: string | undefined;
-  const defaultAuth = new GoogleAuth({
-    scopes: ["https://www.googleapis.com/auth/cloud-platform"],
-  });
-
-  try {
-    projectId = await defaultAuth.getProjectId();
-    logDebug(`Inferred project ID from ADC/gcloud config: ${projectId}`);
-  } catch (e: any) {
-    logDebug(`Could not infer project ID from ADC/gcloud: ${e.message}`);
-  }
-
-  if (!projectId) {
-    projectId = process.env.GOOGLE_CLOUD_PROJECT;
-    if (projectId) {
-      logDebug(
-        `Found project ID from environment fallback (.env): ${projectId}`,
-      );
-    } else {
-      spinner.fail(
-        "GOOGLE_CLOUD_PROJECT was not detected from ADC, gcloud config, or .env.",
-      );
-      process.exit(1);
-    }
-  }
-
   // --- Authenticate ---
-  spinner.text = "Authenticating...";
-  let authResult: AuthResult;
+  spinner.text = "Authenticating with Google...";
+  if (forceLogin) {
+    spinner.text = "Launching browser login...";
+  }
+  let oauthClient: OAuth2Client;
   try {
-    authResult = await authenticate(logDebug);
+    oauthClient = await authenticate(logDebug, forceLogin);
   } catch (e: any) {
     spinner.fail(`Authentication failed: ${e.message}`);
     process.exit(1);
   }
 
-  spinner.succeed(`Authenticated with project: ${projectId}`);
+  let accessToken: string;
+  try {
+    const { token } = await oauthClient.getAccessToken();
+    if (!token)
+      throw new Error("No access token returned after authentication.");
+    accessToken = token;
+  } catch (e: any) {
+    spinner.fail(`Failed to retrieve access token: ${e.message}`);
+    process.exit(1);
+  }
+
+  // --- Resolve the Cloud AI Companion project via loadCodeAssist ---
+  // This is the project the user's account is onboarded to for Gemini Code Assist.
+  const envProjectId =
+    process.env.GOOGLE_CLOUD_PROJECT ||
+    process.env.GOOGLE_CLOUD_PROJECT_ID ||
+    undefined;
+
+  logDebug(
+    `Calling loadCodeAssist to resolve Cloud AI Companion project (env hint: ${envProjectId ?? "none"})`,
+  );
+
+  let cloudaicompanionProject: string | undefined;
+  try {
+    const loadRes = await codeAssistPost(
+      "loadCodeAssist",
+      {
+        cloudaicompanionProject: envProjectId,
+        metadata: {
+          ideType: "IDE_UNSPECIFIED",
+          platform: "PLATFORM_UNSPECIFIED",
+          pluginType: "GEMINI",
+          duetProject: envProjectId,
+        },
+      },
+      accessToken,
+      logDebug,
+    );
+    cloudaicompanionProject = loadRes?.cloudaicompanionProject ?? envProjectId;
+    logDebug(`Resolved project: ${cloudaicompanionProject}`);
+  } catch (e: any) {
+    logDebug(
+      `loadCodeAssist failed: ${e.message}. Falling back to env project.`,
+    );
+    cloudaicompanionProject = envProjectId;
+  }
+
+  if (!cloudaicompanionProject) {
+    spinner.fail(
+      "Could not determine project. Set GOOGLE_CLOUD_PROJECT in your .env file.",
+    );
+    process.exit(1);
+  }
+
+  spinner.succeed(`Authenticated with project: ${cloudaicompanionProject}`);
   spinner.start("Scanning repository for code files...");
 
-  logDebug(`Scanning repository in base directory: ${baseDir}`);
+  logDebug(`Scanning base directory: ${baseDir}`);
   const files = await scanCodeDirectory(baseDir);
 
   if (files.length === 0) {
     spinner.info("No valid source files found for review.");
-    logDebug("No files found, exiting.");
     process.exit(0);
   }
 
   spinner.succeed(`Found ${files.length} source files to review.`);
   spinner.start("Loading skills context (Markdowns)...");
 
-  logDebug(`Found ${files.length} files. Extracting skills context...`);
   const skillsContext = await extractSkills(baseDir);
-
   spinner.succeed("Skills injected.");
-  logDebug(
-    `Skills injected. Context length: ${skillsContext.length} characters.`,
-  );
+  logDebug(`Skills context length: ${skillsContext.length} chars.`);
 
-  // --- Prepare Gemini API call ---
-  spinner.start("Calling Gemini API (Vertex AI) to review code...");
-  logDebug(
-    `Initializing GoogleGenAI SDK with project: ${projectId}, location: ${location}`,
-  );
+  // ---------------------------------------------------------------------------
+  // Prepare segments and call Code Assist generateContent
+  // ---------------------------------------------------------------------------
 
-  const headers: Record<string, string> = {
-    Authorization: `Bearer ${authResult.token}`,
-  };
+  const MODEL = "gemini-2.0-flash-001";
 
-  if (authResult.quotaProjectId) {
-    headers["X-Goog-User-Project"] = authResult.quotaProjectId;
-    logDebug(`Added X-Goog-User-Project header: ${authResult.quotaProjectId}`);
-  }
-
-  const ai = new GoogleGenAI({
-    project: projectId,
-    location: location,
-    vertexai: true,
-    httpOptions: {
-      headers,
-    },
-  });
-
-  const CHAR_THRESHOLD = 30000;
-
-  function estimateTokenCount(text: string): number {
-    return Math.ceil(text.length / 4);
-  }
-
-  const responseSchema: Schema = {
-    type: Type.OBJECT,
+  const responseSchema = {
+    type: "OBJECT",
     properties: {
       score: {
-        type: Type.NUMBER,
+        type: "NUMBER",
         description:
           "The logic and architectural score from 0 to 100 for this batch.",
       },
       findings: {
-        type: Type.ARRAY,
+        type: "ARRAY",
         items: {
-          type: Type.OBJECT,
+          type: "OBJECT",
           properties: {
-            file: { type: Type.STRING, description: "The exact file path" },
-            line: {
-              type: Type.NUMBER,
-              description: "Line number",
-            },
+            file: { type: "STRING", description: "The exact file path" },
+            line: { type: "NUMBER", description: "Line number" },
             snippet: {
-              type: Type.STRING,
+              type: "STRING",
               description: "The specific snippet being flagged",
             },
             suggestion: {
-              type: Type.STRING,
+              type: "STRING",
               description:
                 "Idea, bug, or refactoring suggestion based on skills",
             },
             priority: {
-              type: Type.STRING,
+              type: "STRING",
               description: "Priority of the finding",
               enum: ["low", "medium", "high"],
             },
@@ -436,6 +438,12 @@ export async function runReview(
     },
     required: ["score", "findings"],
   };
+
+  const CHAR_THRESHOLD = 30000;
+
+  function estimateTokenCount(text: string): number {
+    return Math.ceil(text.length / 4);
+  }
 
   spinner.start("Chunking files into batch segments...");
 
@@ -460,10 +468,10 @@ export async function runReview(
   }
 
   logDebug(
-    `Created ${segments.length} segments based on a ~${CHAR_THRESHOLD} character limit.`,
+    `Created ${segments.length} segments (~${CHAR_THRESHOLD} char limit).`,
   );
   spinner.succeed(`Created ${segments.length} segments for review.`);
-  spinner.start("Calling Gemini API (Vertex AI) to review code segments...");
+  spinner.start("Calling Gemini Code Assist API to review code segments...");
 
   let totalScore = 0;
   const allFindings: any[] = [];
@@ -472,23 +480,41 @@ export async function runReview(
   for (let i = 0; i < segments.length; i++) {
     try {
       const segmentPayload = segments[i];
-      const estimatedTokens = estimateTokenCount(segmentPayload);
       logDebug(
-        `Sending segment ${i + 1}/${segments.length}, tokens estimated: ${estimatedTokens}`,
+        `Segment ${i + 1}/${segments.length} — ~${estimateTokenCount(segmentPayload)} tokens`,
       );
-      const response = await ai.models.generateContent({
-        model: "gemini-1.5-pro",
-        contents: segmentPayload,
-        config: {
-          systemInstruction: skillsContext,
-          responseMimeType: "application/json",
-          responseSchema: responseSchema,
-          temperature: 0.2,
-        },
-      });
 
-      logDebug(`Successfully received response for segment ${i + 1}.`);
-      const responseText = response.text || "{}";
+      // Request body following the Code Assist generateContent wire format:
+      // { model, project, request: { contents, systemInstruction, generationConfig } }
+      const requestBody = {
+        model: MODEL,
+        project: cloudaicompanionProject,
+        request: {
+          systemInstruction: {
+            role: "system",
+            parts: [{ text: skillsContext }],
+          },
+          contents: [{ role: "user", parts: [{ text: segmentPayload }] }],
+          generationConfig: {
+            temperature: 0.2,
+            responseMimeType: "application/json",
+            responseSchema,
+          },
+        },
+      };
+
+      const json = await codeAssistPost(
+        "generateContent",
+        requestBody,
+        accessToken,
+        logDebug,
+      );
+
+      logDebug(`Response received for segment ${i + 1}.`);
+
+      // Code Assist response: { response: { candidates: [...] } }
+      const responseText: string =
+        json?.response?.candidates?.[0]?.content?.parts?.[0]?.text ?? "{}";
       const reportData = JSON.parse(responseText);
 
       if (typeof reportData.score === "number") {
@@ -500,7 +526,7 @@ export async function runReview(
         allFindings.push(...reportData.findings);
       }
     } catch (err: any) {
-      logDebug(`Error processing segment ${i + 1}: ${err?.message || err}`);
+      logDebug(`Error on segment ${i + 1}: ${err?.message || err}`);
     }
   }
 

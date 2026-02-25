@@ -21,10 +21,20 @@ program
     "us-central1",
   )
   .option("--debug", "Enable debug logging", false)
+  .option(
+    "--login",
+    "Force a fresh browser-based login, clearing any cached credentials",
+    false,
+  )
   .action(async (options) => {
     try {
       console.log(`Starting review in directory: ${options.dir}`);
-      await runReview(options.dir, options.location, options.debug);
+      await runReview(
+        options.dir,
+        options.location,
+        options.debug,
+        options.login,
+      );
     } catch (error) {
       console.error("Error during code review:", error);
       process.exit(1);
