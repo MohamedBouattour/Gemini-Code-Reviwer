@@ -2,7 +2,6 @@
 
 import fg from "fast-glob";
 import fs from "fs/promises";
-import path from "path";
 
 export interface CodeFile {
   filePath: string;
@@ -10,7 +9,6 @@ export interface CodeFile {
 }
 
 export async function scanCodeDirectory(baseDir: string): Promise<CodeFile[]> {
-  // We're specifically targeting the src/ directories (or equivalent layout)
   const pattern = "src/**/*.{java,ts,js,tsx,jsx,html,css,scss}";
 
   const files = await fg([pattern], {

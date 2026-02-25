@@ -73,32 +73,48 @@ async function getBrowserToken(
   const host = process.env["OAUTH_CALLBACK_HOST"] || "127.0.0.1";
 
   const redirectUri = `http://127.0.0.1:${port}/oauth2callback`;
-  const expectedState = crypto.randomBytes(32).toString("hex");
+  const state = crypto.randomBytes(32).toString("hex");
 
   const authUrl = client.generateAuthUrl({
     redirect_uri: redirectUri,
     access_type: "offline",
     scope: OAUTH_SCOPE,
-    state: expectedState,
+    state,
   });
 
   return new Promise((resolve, reject) => {
     const server = http.createServer(async (req, res) => {
       try {
-        if (!req.url?.startsWith("/oauth2callback")) {
+        if (req.url!.indexOf("/oauth2callback") === -1) {
           res.writeHead(HTTP_REDIRECT, { Location: SIGN_IN_FAILURE_URL });
           res.end();
+          reject(
+            new Error(
+              "OAuth callback not received. Unexpected request: " + req.url,
+            ),
+          );
           return;
         }
-        const qs = new url.URL(req.url, "http://127.0.0.1:3000").searchParams;
+        // acquire the code from the querystring, and close the web server.
+        const qs = new url.URL(req.url!, "http://127.0.0.1:3000").searchParams;
         if (qs.get("error")) {
           res.writeHead(HTTP_REDIRECT, { Location: SIGN_IN_FAILURE_URL });
           res.end();
-          reject(new Error(`OAuth error: ${qs.get("error")}`));
-        } else if (qs.get("state") !== expectedState) {
-          res.writeHead(400);
-          res.end("State mismatch. Possible CSRF attack.");
-          reject(new Error("OAuth state mismatch. Possible CSRF."));
+
+          const errorCode = qs.get("error");
+          const errorDescription =
+            qs.get("error_description") || "No additional details provided";
+          reject(
+            new Error(`Google OAuth error: ${errorCode}. ${errorDescription}`),
+          );
+        } else if (qs.get("state") !== state) {
+          res.end("State mismatch. Possible CSRF attack");
+
+          reject(
+            new Error(
+              "OAuth state mismatch. Possible CSRF attack or browser session issue.",
+            ),
+          );
         } else if (qs.get("code")) {
           try {
             const { tokens } = await client.getToken({
@@ -106,6 +122,7 @@ async function getBrowserToken(
               redirect_uri: redirectUri,
             });
             client.setCredentials(tokens);
+
             res.writeHead(HTTP_REDIRECT, { Location: SIGN_IN_SUCCESS_URL });
             res.end();
             resolve(tokens.access_token!);
@@ -114,17 +131,23 @@ async function getBrowserToken(
             res.end();
             reject(
               new Error(
-                `Failed to exchange authorization code for tokens: ${error.message}`,
+                `Failed to exchange authorization code for tokens: ${error.message || error}`,
               ),
             );
           }
         } else {
-          res.writeHead(400);
-          res.end("No code given");
-          reject(new Error("No code given in callback."));
+          reject(
+            new Error(
+              "No authorization code received from Google OAuth. Please try authenticating again.",
+            ),
+          );
         }
-      } catch (e) {
-        reject(e);
+      } catch (e: any) {
+        reject(
+          new Error(
+            `Unexpected error during OAuth authentication: ${e.message || e}`,
+          ),
+        );
       } finally {
         server.close();
       }
