@@ -13,6 +13,8 @@ export interface CodeFinding {
 
 export interface CodeReviewResponse {
   score: number;
+  namingConventionScore?: number;
+  solidPrinciplesScore?: number;
   codeDuplicationPercentage: number;
   cyclomaticComplexity: number;
   maintainabilityIndex: number;
@@ -25,16 +27,25 @@ export function generateMarkdownReport(
 ): string {
   if (!data) return "Error generating report format.";
 
-  let scoreText = data.score.toString() + "/100";
-  if (useChalk) {
-    let scoreColor = chalk.green;
-    if (data.score < 70) scoreColor = chalk.yellow;
-    if (data.score < 50) scoreColor = chalk.red;
-    scoreText = scoreColor(scoreText);
+  function formatScore(score: number | undefined): string {
+    if (score === undefined) return "N/A";
+    let text = score.toString() + "/100";
+    if (useChalk) {
+      if (score < 50) return chalk.red(text);
+      if (score < 70) return chalk.yellow(text);
+      return chalk.green(text);
+    }
+    return text;
   }
 
   let report = `# AI Code Review Report\n\n`;
-  report += `**Overall Logic & Architecture Score:** ${scoreText}\n`;
+  report += `**Overall Logic & Architecture Score:** ${formatScore(data.score)}\n`;
+  if (data.namingConventionScore !== undefined) {
+    report += `**Naming Conventions Score:** ${formatScore(data.namingConventionScore)}\n`;
+  }
+  if (data.solidPrinciplesScore !== undefined) {
+    report += `**SOLID Principles Score:** ${formatScore(data.solidPrinciplesScore)}\n`;
+  }
   report += `**Code Duplication:** ${data.codeDuplicationPercentage.toFixed(2)}%\n`;
   report += `**Average Cyclomatic Complexity:** ${data.cyclomaticComplexity.toFixed(2)}\n`;
   report += `**Maintainability Index:** ${data.maintainabilityIndex.toFixed(2)}/100\n\n`;

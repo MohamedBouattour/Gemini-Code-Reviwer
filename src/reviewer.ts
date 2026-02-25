@@ -456,6 +456,16 @@ export async function runReview(
         description:
           "The logic and architectural score from 0 to 100 for this batch.",
       },
+      namingConventionScore: {
+        type: "NUMBER",
+        description:
+          "Score from 0 to 100 for naming conventions and semantic names for this batch.",
+      },
+      solidPrinciplesScore: {
+        type: "NUMBER",
+        description:
+          "Score from 0 to 100 for SOLID principles and design patterns for this batch.",
+      },
       codeDuplicationPercentage: {
         type: "NUMBER",
         description:
@@ -509,6 +519,8 @@ export async function runReview(
     },
     required: [
       "score",
+      "namingConventionScore",
+      "solidPrinciplesScore",
       "codeDuplicationPercentage",
       "cyclomaticComplexity",
       "maintainabilityIndex",
@@ -570,6 +582,8 @@ export async function runReview(
   spinner.start("Calling Gemini Code Assist API to review code segments...");
 
   let totalScore = 0;
+  let totalNamingConventionScore = 0;
+  let totalSolidPrinciplesScore = 0;
   let totalDuplication = 0;
   let totalComplexity = 0;
   let totalMaintainability = 0;
@@ -640,6 +654,14 @@ ${skillsContext}`;
 
       if (typeof reportData.score === "number") {
         totalScore += reportData.score;
+        totalNamingConventionScore +=
+          typeof reportData.namingConventionScore === "number"
+            ? reportData.namingConventionScore
+            : reportData.score;
+        totalSolidPrinciplesScore +=
+          typeof reportData.solidPrinciplesScore === "number"
+            ? reportData.solidPrinciplesScore
+            : reportData.score;
         totalDuplication += reportData.codeDuplicationPercentage || 0;
         totalComplexity += reportData.cyclomaticComplexity || 0;
         totalMaintainability += reportData.maintainabilityIndex || 0;
@@ -680,6 +702,14 @@ ${skillsContext}`;
     batchesSucceeded > 0
       ? Math.round(totalScore / batchesSucceeded)
       : previousState?.score || 0;
+  const finalNamingConventionScore =
+    batchesSucceeded > 0
+      ? Math.round(totalNamingConventionScore / batchesSucceeded)
+      : previousState?.namingConventionScore || finalScore;
+  const finalSolidPrinciplesScore =
+    batchesSucceeded > 0
+      ? Math.round(totalSolidPrinciplesScore / batchesSucceeded)
+      : previousState?.solidPrinciplesScore || finalScore;
   const finalDuplication =
     batchesSucceeded > 0
       ? totalDuplication / batchesSucceeded
@@ -707,6 +737,8 @@ ${skillsContext}`;
 
   const finalReport: CodeReviewResponse = {
     score: finalScore,
+    namingConventionScore: finalNamingConventionScore,
+    solidPrinciplesScore: finalSolidPrinciplesScore,
     codeDuplicationPercentage: finalDuplication,
     cyclomaticComplexity: finalComplexity,
     maintainabilityIndex: finalMaintainability,
