@@ -11,6 +11,7 @@ import crypto from "node:crypto";
 import open from "open";
 import { readFileSync, promises as fs } from "node:fs";
 import { createRequire } from "node:module";
+import path from "node:path";
 
 // ---------------------------------------------------------------------------
 // Reuse from @google/gemini-cli-core (deep imports to avoid heavy barrel init)
@@ -399,9 +400,6 @@ export async function runReview(
   // ---------------------------------------------------------------------------
   // Prepare segments and call Code Assist generateContent
   // ---------------------------------------------------------------------------
-
-  const MODEL = "gemini-2.0-flash-001";
-
   const responseSchema = {
     type: "OBJECT",
     properties: {
@@ -409,6 +407,19 @@ export async function runReview(
         type: "NUMBER",
         description:
           "The logic and architectural score from 0 to 100 for this batch.",
+      },
+      codeDuplicationPercentage: {
+        type: "NUMBER",
+        description:
+          "The estimated percentage of code duplication in this batch.",
+      },
+      cyclomaticComplexity: {
+        type: "NUMBER",
+        description: "The estimated average cyclomatic complexity.",
+      },
+      maintainabilityIndex: {
+        type: "NUMBER",
+        description: "The estimated maintainability index (0-100).",
       },
       findings: {
         type: "ARRAY",
@@ -436,10 +447,16 @@ export async function runReview(
         },
       },
     },
-    required: ["score", "findings"],
+    required: [
+      "score",
+      "codeDuplicationPercentage",
+      "cyclomaticComplexity",
+      "maintainabilityIndex",
+      "findings",
+    ],
   };
 
-  const CHAR_THRESHOLD = 30000;
+  const CHAR_THRESHOLD = 500000;
 
   function estimateTokenCount(text: string): number {
     return Math.ceil(text.length / 4);
@@ -447,8 +464,9 @@ export async function runReview(
 
   spinner.start("Chunking files into batch segments...");
 
-  const segments: string[] = [];
+  const segments: { payload: string; files: string[] }[] = [];
   let currentSegment = "Review the following code:\n\n";
+  let currentFiles: string[] = [];
 
   for (const f of files) {
     const fileXml = `<file path="${f.filePath}">\n${f.content}\n</file>\n\n`;
@@ -456,15 +474,17 @@ export async function runReview(
       currentSegment.length + fileXml.length > CHAR_THRESHOLD &&
       currentSegment !== "Review the following code:\n\n"
     ) {
-      segments.push(currentSegment);
+      segments.push({ payload: currentSegment, files: currentFiles });
       currentSegment = "Review the following code:\n\n" + fileXml;
+      currentFiles = [f.filePath];
     } else {
       currentSegment += fileXml;
+      currentFiles.push(f.filePath);
     }
   }
 
   if (currentSegment !== "Review the following code:\n\n") {
-    segments.push(currentSegment);
+    segments.push({ payload: currentSegment, files: currentFiles });
   }
 
   logDebug(
@@ -474,20 +494,37 @@ export async function runReview(
   spinner.start("Calling Gemini Code Assist API to review code segments...");
 
   let totalScore = 0;
+  let totalDuplication = 0;
+  let totalComplexity = 0;
+  let totalMaintainability = 0;
   const allFindings: any[] = [];
   let batchesSucceeded = 0;
 
   for (let i = 0; i < segments.length; i++) {
     try {
-      const segmentPayload = segments[i];
+      const { payload: segmentPayload, files: segmentFiles } = segments[i];
+      const progress = Math.round(((i + 1) / segments.length) * 100);
+
+      spinner.text = `[${progress}%] Reviewing chunk ${i + 1}/${segments.length}...`;
+      console.log(
+        `\n[${progress}%] Chunk ${i + 1}/${segments.length} loaded to context:`,
+      );
+      segmentFiles.forEach((f) => console.log(`  - ${f}`));
+
+      // use a free/low cost model (infinite context) for large ones to not impact quotas; use pro for harder/smaller tasks
+      const segmentModel =
+        estimateTokenCount(segmentPayload) > 50000
+          ? "gemini-2.5-flash"
+          : "gemini-2.5-pro";
+
       logDebug(
-        `Segment ${i + 1}/${segments.length} — ~${estimateTokenCount(segmentPayload)} tokens`,
+        `Segment ${i + 1}/${segments.length} — ~${estimateTokenCount(segmentPayload)} tokens, model: ${segmentModel}`,
       );
 
       // Request body following the Code Assist generateContent wire format:
       // { model, project, request: { contents, systemInstruction, generationConfig } }
       const requestBody = {
-        model: MODEL,
+        model: segmentModel,
         project: cloudaicompanionProject,
         request: {
           systemInstruction: {
@@ -519,6 +556,9 @@ export async function runReview(
 
       if (typeof reportData.score === "number") {
         totalScore += reportData.score;
+        totalDuplication += reportData.codeDuplicationPercentage || 0;
+        totalComplexity += reportData.cyclomaticComplexity || 0;
+        totalMaintainability += reportData.maintainabilityIndex || 0;
         batchesSucceeded++;
       }
 
@@ -539,11 +579,30 @@ export async function runReview(
 
   const finalScore =
     batchesSucceeded > 0 ? Math.round(totalScore / batchesSucceeded) : 0;
+  const finalDuplication =
+    batchesSucceeded > 0 ? totalDuplication / batchesSucceeded : 0;
+  const finalComplexity =
+    batchesSucceeded > 0 ? totalComplexity / batchesSucceeded : 0;
+  const finalMaintainability =
+    batchesSucceeded > 0 ? totalMaintainability / batchesSucceeded : 0;
+
   const finalReport: CodeReviewResponse = {
     score: finalScore,
+    codeDuplicationPercentage: finalDuplication,
+    cyclomaticComplexity: finalComplexity,
+    maintainabilityIndex: finalMaintainability,
     findings: allFindings,
   };
 
-  const markdownOutput = generateMarkdownReport(finalReport);
-  console.log("\n\n" + markdownOutput);
+  const consoleOutput = generateMarkdownReport(finalReport, true);
+  console.log("\n\n" + consoleOutput);
+
+  const markdownOutput = generateMarkdownReport(finalReport, false);
+  const reportPath = path.join(baseDir, "gemini-code-reviewer.md");
+  try {
+    await fs.writeFile(reportPath, markdownOutput, "utf-8");
+    console.log(`\nReport successfully saved to ${reportPath}`);
+  } catch (err: any) {
+    console.error(`\nFailed to save report to ${reportPath}:`, err.message);
+  }
 }
