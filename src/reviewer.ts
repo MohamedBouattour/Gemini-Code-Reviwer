@@ -1,11 +1,152 @@
 // Copyright 2026 Google LLC
 
-import { GoogleAuth } from "google-auth-library";
+import { GoogleAuth, OAuth2Client } from "google-auth-library";
 import { GoogleGenAI, Type, Schema } from "@google/genai";
 import { scanCodeDirectory } from "./scanner.js";
 import { extractSkills } from "./skills.js";
 import { generateMarkdownReport, CodeReviewResponse } from "./formatter.js";
 import ora from "ora";
+import open from "open";
+import * as http from "node:http";
+import url from "node:url";
+import crypto from "node:crypto";
+import net from "node:net";
+
+function getAvailablePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    let port = 0;
+    try {
+      const portStr = process.env["OAUTH_CALLBACK_PORT"];
+      if (portStr) {
+        port = parseInt(portStr, 10);
+        if (isNaN(port) || port <= 0 || port > 65535) {
+          return reject(
+            new Error(`Invalid value for OAUTH_CALLBACK_PORT: "${portStr}"`),
+          );
+        }
+        return resolve(port);
+      }
+      const server = net.createServer();
+      server.listen(0, () => {
+        const address = server.address();
+        if (address && typeof address === "object") {
+          port = address.port;
+        }
+      });
+      server.on("listening", () => {
+        server.close();
+        server.unref();
+      });
+      server.on("error", (e) => reject(e));
+      server.on("close", () => resolve(port));
+    } catch (e) {
+      reject(e);
+    }
+  });
+}
+
+async function getBrowserToken(
+  logDebug: (msg: string) => void,
+): Promise<string> {
+  const OAUTH_CLIENT_ID = process.env.OAUTH_CLIENT_ID;
+  const OAUTH_CLIENT_SECRET = process.env.OAUTH_CLIENT_SECRET;
+
+  if (!OAUTH_CLIENT_ID || !OAUTH_CLIENT_SECRET) {
+    return Promise.reject(
+      new Error(
+        "OAUTH_CLIENT_ID or OAUTH_CLIENT_SECRET is missing from the environment.",
+      ),
+    );
+  }
+
+  const OAUTH_SCOPE = ["https://www.googleapis.com/auth/cloud-platform"];
+  const HTTP_REDIRECT = 301;
+  const SIGN_IN_SUCCESS_URL =
+    "https://developers.google.com/gemini-code-assist/auth_success_gemini";
+  const SIGN_IN_FAILURE_URL =
+    "https://developers.google.com/gemini-code-assist/auth_failure_gemini";
+
+  logDebug("Starting browser-based OAuth2 authentication...");
+  const client = new OAuth2Client(OAUTH_CLIENT_ID, OAUTH_CLIENT_SECRET);
+
+  const port = await getAvailablePort();
+  const host = process.env["OAUTH_CALLBACK_HOST"] || "127.0.0.1";
+
+  const redirectUri = `http://127.0.0.1:${port}/oauth2callback`;
+  const expectedState = crypto.randomBytes(32).toString("hex");
+
+  const authUrl = client.generateAuthUrl({
+    redirect_uri: redirectUri,
+    access_type: "offline",
+    scope: OAUTH_SCOPE,
+    state: expectedState,
+  });
+
+  return new Promise((resolve, reject) => {
+    const server = http.createServer(async (req, res) => {
+      try {
+        if (!req.url?.startsWith("/oauth2callback")) {
+          res.writeHead(HTTP_REDIRECT, { Location: SIGN_IN_FAILURE_URL });
+          res.end();
+          return;
+        }
+        const qs = new url.URL(req.url, "http://127.0.0.1:3000").searchParams;
+        if (qs.get("error")) {
+          res.writeHead(HTTP_REDIRECT, { Location: SIGN_IN_FAILURE_URL });
+          res.end();
+          reject(new Error(`OAuth error: ${qs.get("error")}`));
+        } else if (qs.get("state") !== expectedState) {
+          res.writeHead(400);
+          res.end("State mismatch. Possible CSRF attack.");
+          reject(new Error("OAuth state mismatch. Possible CSRF."));
+        } else if (qs.get("code")) {
+          try {
+            const { tokens } = await client.getToken({
+              code: qs.get("code")!,
+              redirect_uri: redirectUri,
+            });
+            client.setCredentials(tokens);
+            res.writeHead(HTTP_REDIRECT, { Location: SIGN_IN_SUCCESS_URL });
+            res.end();
+            resolve(tokens.access_token!);
+          } catch (error: any) {
+            res.writeHead(HTTP_REDIRECT, { Location: SIGN_IN_FAILURE_URL });
+            res.end();
+            reject(
+              new Error(
+                `Failed to exchange authorization code for tokens: ${error.message}`,
+              ),
+            );
+          }
+        } else {
+          res.writeHead(400);
+          res.end("No code given");
+          reject(new Error("No code given in callback."));
+        }
+      } catch (e) {
+        reject(e);
+      } finally {
+        server.close();
+      }
+    });
+
+    server.listen(port, host, async () => {
+      logDebug(`Opening browser at: ${authUrl}`);
+      try {
+        await open(authUrl);
+      } catch (e) {
+        logDebug(`Failed to open browser automatically: ${e}`);
+        console.log(
+          `\n\nPlease open the following URL in your browser:\n${authUrl}\n`,
+        );
+      }
+    });
+
+    server.on("error", (err) => {
+      reject(new Error(`OAuth callback server error: ${err.message}`));
+    });
+  });
+}
 
 export async function runReview(
   baseDir: string,
@@ -21,59 +162,53 @@ export async function runReview(
 
   logDebug("Starting authentication process...");
 
-  let projectId = process.env.GOOGLE_CLOUD_PROJECT;
-
-  if (projectId) {
-    logDebug(`Found project ID from environment: ${projectId}`);
-  }
-
-  logDebug("Initializing GoogleAuth client...");
-  const auth = new GoogleAuth({
+  let projectId: string | undefined;
+  const defaultAuth = new GoogleAuth({
     scopes: ["https://www.googleapis.com/auth/cloud-platform"],
   });
 
-  if (!projectId) {
-    spinner.text =
-      "Fetching project ID from Application Default Credentials...";
-    logDebug(
-      "GOOGLE_CLOUD_PROJECT not found in env, attempting to infer from ADC...",
-    );
-    try {
-      projectId = await auth.getProjectId();
-      logDebug(`Inferred project ID from ADC: ${projectId}`);
-    } catch (e) {
-      spinner.fail("Failed to load Google Cloud Auth credentials.");
-      logDebug(`Failed to get project ID: ${e}`);
-      console.error(e);
-      process.exit(1);
-    }
+  try {
+    projectId = await defaultAuth.getProjectId();
+    logDebug(`Inferred project ID from ADC/gcloud config: ${projectId}`);
+  } catch (e: any) {
+    logDebug(`Could not infer project ID from ADC/gcloud: ${e.message}`);
   }
 
   if (!projectId) {
-    spinner.fail(
-      "GOOGLE_CLOUD_PROJECT was not set and could not be detected via ADC.",
-    );
-    process.exit(1);
+    projectId = process.env.GOOGLE_CLOUD_PROJECT;
+    if (projectId) {
+      logDebug(
+        `Found project ID from environment fallback (.env): ${projectId}`,
+      );
+    } else {
+      spinner.fail(
+        "GOOGLE_CLOUD_PROJECT was not detected from ADC, gcloud config, or .env.",
+      );
+      process.exit(1);
+    }
   }
 
   let tokenData: string | null | undefined = null;
   let quotaProjectId: string | null | undefined = null;
 
   try {
-    logDebug("Fetching access token via GoogleAuth client...");
-    const client = await auth.getClient();
-    const accessTokenResponse = await client.getAccessToken();
-    tokenData = accessTokenResponse.token;
-    quotaProjectId = client.quotaProjectId;
-
-    logDebug(
-      `Successfully obtained token. Quota Project ID: ${quotaProjectId || "None"}`,
-    );
+    spinner.text = "Waiting for browser authentication...";
+    tokenData = await getBrowserToken(logDebug);
+    logDebug("Successfully obtained token from browser.");
   } catch (e) {
-    spinner.fail("Failed to fetch access token.");
-    logDebug(`Error fetching access token: ${e}`);
-    console.error(e);
-    process.exit(1);
+    spinner.text = "Browser auth failed or skipped, trying ADC...";
+    logDebug(`Browser auth issue: ${e}. Falling back to ADC...`);
+    try {
+      const client = await defaultAuth.getClient();
+      const accessTokenResponse = await client.getAccessToken();
+      tokenData = accessTokenResponse.token;
+      quotaProjectId = client.quotaProjectId;
+      logDebug("Successfully obtained token from ADC fallback.");
+    } catch (fallbackError) {
+      spinner.fail("Failed to fetch access token from both browser and ADC.");
+      console.error(fallbackError);
+      process.exit(1);
+    }
   }
 
   spinner.succeed(`Authenticated with project: ${projectId}`);
