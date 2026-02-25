@@ -20,10 +20,11 @@ program
     "Google Cloud Location for Gemini",
     "us-central1",
   )
+  .option("--debug", "Enable debug logging", false)
   .action(async (options) => {
     try {
       console.log(`Starting review in directory: ${options.dir}`);
-      await runReview(options.dir, options.location);
+      await runReview(options.dir, options.location, options.debug);
     } catch (error) {
       console.error("Error during code review:", error);
       process.exit(1);
