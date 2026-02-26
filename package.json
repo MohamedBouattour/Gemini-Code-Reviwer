@@ -1,6 +1,6 @@
 {
   "name": "gemini-code-reviewer",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "AI-powered code reviewer using Google Gemini, with smart file scanning and best-practices injection.",
   "type": "module",
   "main": "dist/index.js",
@@ -28,8 +28,16 @@
     "cli",
     "google"
   ],
-  "author": "",
+  "author": "Mohamed Bouattour",
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/MohamedBouattour/Gemini-Code-Reviwer.git"
+  },
+  "bugs": {
+    "url": "https://github.com/MohamedBouattour/Gemini-Code-Reviwer/issues"
+  },
+  "homepage": "https://github.com/MohamedBouattour/Gemini-Code-Reviwer#readme",
   "dependencies": {
     "@google/gemini-cli-core": "^0.30.0",
     "@google/genai": "^1.0.0",
