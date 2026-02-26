@@ -29,6 +29,7 @@ import type {
   InfraFindingEntity,
   ExecutiveSummary,
   AiSubScores,
+  TimingStats,
 } from "../../core/entities/ProjectReport.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -519,6 +520,25 @@ function renderCodeFindings(
   return out;
 }
 
+function renderTimingStats(stats: TimingStats): string {
+  const fmt = (ms: number) => {
+    if (ms < 1000) return `${ms}ms`;
+    return `${(ms / 1000).toFixed(1)}s`;
+  };
+
+  let out = "## ⏱️ Pipeline Timing\n\n";
+  out += "| Phase | Duration |\n|:---|---:|\n";
+  out += `| File scan + hashing | ${fmt(stats.scanMs)} |\n`;
+  out += `| Auditors (secrets, infra) | ${fmt(stats.auditMs)} |\n`;
+  out += `| Shallow oneshot (global metrics) | ${fmt(stats.shallowReviewMs)} |\n`;
+  out += `| Deep review (${stats.deepChunkCount} chunk${stats.deepChunkCount !== 1 ? "s" : ""}) | ${fmt(stats.deepReviewMs)} |\n`;
+  out += `| Executive summary | ${fmt(stats.summaryMs)} |\n`;
+  out += `| **Total** | **${fmt(stats.totalMs)}** |\n`;
+  out += "\n";
+  out += `_Reviewed on ${stats.timestamp}_\n\n`;
+  return out;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // ReportBuilder — main class
 // ─────────────────────────────────────────────────────────────────────────────
@@ -552,6 +572,7 @@ export class ReportBuilder implements IReportBuilder {
   private secrets: SecretFindingEntity[] = [];
   private executiveSummary?: ExecutiveSummary;
   private aiScores?: AiScores;
+  private timingStats?: TimingStats;
 
   // ── IReportBuilder implementation ─────────────────────────────────────────
 
@@ -581,6 +602,10 @@ export class ReportBuilder implements IReportBuilder {
 
   setAiScores(scores: AiScores): void {
     this.aiScores = scores;
+  }
+
+  setTimingStats(stats: TimingStats): void {
+    this.timingStats = stats;
   }
 
   /**
@@ -651,6 +676,10 @@ export class ReportBuilder implements IReportBuilder {
     );
 
     report += renderCodeFindings(this.aggregated, useChalk);
+
+    if (this.timingStats) {
+      report += renderTimingStats(this.timingStats);
+    }
 
     return report;
   }

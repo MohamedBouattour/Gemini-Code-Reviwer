@@ -29,6 +29,7 @@ import * as path from "node:path";
 import type {
   IAiProvider,
   CodeReviewBatch,
+  ShallowReviewResult,
 } from "../core/interfaces/IAiProvider.js";
 import type {
   IFileScanner,
@@ -44,13 +45,14 @@ import type { IReportBuilder } from "../core/interfaces/IReportBuilder.js";
 import type {
   ProjectReport,
   AiSubScores,
+  TimingStats,
 } from "../core/entities/ProjectReport.js";
 import type { ReviewFinding } from "../core/entities/ReviewFinding.js";
 import {
   NoSourceFilesError,
   AllBatchesFailedError,
 } from "../core/domain-errors/ReviewerErrors.js";
-import { CHAR_THRESHOLD } from "../shared/constants.js";
+import { CHUNK_CHAR_THRESHOLD } from "../shared/constants.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // IFeedbackManager — local interface (avoids importing infrastructure)
@@ -110,6 +112,7 @@ interface CacheState {
   codeDuplicationPercentage?: number;
   cyclomaticComplexity?: number;
   maintainabilityIndex?: number;
+  timingStats?: TimingStats;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -143,10 +146,13 @@ export class RunCodeReview {
       onProgress = () => {},
     } = input;
 
+    const t0 = performance.now();
+
     // ── Step 1: Scan the project (or reuse pre-loaded context) ───────────────
     onProgress("Scanning project (code, IaC, configs)...");
     logDebug(`Scanning base directory: ${baseDir}`);
 
+    const scanStart = performance.now();
     const project: ScannedProject = preloadedProject
       ? (logDebug(
           "Reusing pre-loaded ScannedProject (no second filesystem scan).",
@@ -216,8 +222,10 @@ export class RunCodeReview {
     logDebug(`Skills context: ${skillsContext.length} chars.`);
 
     const feedbackSuffix = this.feedbackManager.buildSystemPromptSuffix();
+    const scanMs = performance.now() - scanStart;
 
     // ── Step 6: Run the auditor pipeline (OCP) ───────────────────────────────
+    const auditStart = performance.now();
     const auditContext: AuditContext = {
       codeFiles,
       iacFiles: project.iacFiles,
@@ -252,30 +260,69 @@ export class RunCodeReview {
     const infraScannedFiles = combinedAuditResult.scannedFiles ?? [];
     const isPublicFacing =
       combinedAuditResult.isPublicFacing ?? project.isPublicFacing;
+    const auditMs = performance.now() - auditStart;
 
-    // ── Step 7: AI code review (batched) ─────────────────────────────────────
-    onProgress("Preparing code batches for AI review...");
-    const batches = this.buildBatches(
-      changedFiles.map((f) => ({
-        filePath: f.filePath,
-        content: f.content,
-      })),
+    // ── Step 7: Dual-mode AI review (sequential to respect rate limits) ────────
+    //
+    // Two sequential phases:
+    //   A) Shallow oneshot — sends ALL code in one request for global metrics
+    //      (code duplication, cyclomatic complexity, maintainability index).
+    //      These scores require 100% codebase visibility.
+    //
+    //   B) Deep chunks — splits code into ~5k-token chunks and reviews each
+    //      one sequentially for detailed findings + per-chunk naming/SOLID scores.
+    //
+    // All requests are sequential to avoid hitting API rate limits (429).
+    // ─────────────────────────────────────────────────────────────────────────────
+
+    const filesToReview = changedFiles.map((f) => ({
+      filePath: f.filePath,
+      content: f.content,
+    }));
+
+    // Build the full payload for the shallow oneshot scan
+    const HEADER = "Review the following code:\n\n";
+    const fullPayload =
+      HEADER +
+      filesToReview
+        .map((f) => `<file path="${f.filePath}">\n${f.content}\n</file>\n\n`)
+        .join("");
+
+    // Build small chunks for deep review
+    const deepChunks = this.buildBatches(filesToReview, CHUNK_CHAR_THRESHOLD);
+
+    logDebug(
+      `Dual-mode review: 1 shallow oneshot + ${deepChunks.length} deep chunk(s).`,
     );
 
-    logDebug(`Created ${batches.length} batch(es) for AI review.`);
+    // ── Step 7A: Shallow oneshot (global metrics, runs first) ─────────────────
+    const shallowStart = performance.now();
+    let shallowResult: ShallowReviewResult | null = null;
+    onProgress("[Oneshot] Global metrics scan...");
+    try {
+      shallowResult = await this.aiProvider.shallowReviewFull(fullPayload);
+      logDebug(
+        `Shallow oneshot complete: dup=${shallowResult.codeDuplicationPercentage}%, cc=${shallowResult.cyclomaticComplexity}, mi=${shallowResult.maintainabilityIndex}`,
+      );
+    } catch (err: any) {
+      logDebug(`Shallow oneshot failed: ${err?.message ?? err}`);
+    }
+    const shallowReviewMs = performance.now() - shallowStart;
 
+    // ── Step 7B: Deep chunk pipeline (detailed findings, one-by-one) ──────────
+    const deepStart = performance.now();
     const allNewFindings: ReviewFinding[] = [];
-    const batchSubScores: AiSubScores[] = [];
-    let batchesSucceeded = 0;
+    const chunkSubScores: AiSubScores[] = [];
+    let chunksSucceeded = 0;
 
-    for (let i = 0; i < batches.length; i++) {
-      const progress = Math.round(((i + 1) / batches.length) * 100);
+    for (let i = 0; i < deepChunks.length; i++) {
+      const progress = Math.round(((i + 1) / deepChunks.length) * 100);
       onProgress(
-        `[${progress}%] Reviewing chunk ${i + 1}/${batches.length}...`,
+        `[${progress}%] Deep review chunk ${i + 1}/${deepChunks.length}...`,
       );
 
       try {
-        const result = await this.aiProvider.reviewCodeBatch(batches[i], {
+        const result = await this.aiProvider.deepReviewChunk(deepChunks[i], {
           skillsContext,
           feedbackSuffix,
         });
@@ -294,18 +341,19 @@ export class RunCodeReview {
         }
 
         allNewFindings.push(...result.findings);
-        batchSubScores.push(result.subScores);
-        batchesSucceeded++;
+        chunkSubScores.push(result.subScores);
+        chunksSucceeded++;
       } catch (err: any) {
-        logDebug(`Batch ${i + 1} failed: ${err?.message ?? err}`);
+        logDebug(`Deep chunk ${i + 1} failed: ${err?.message ?? err}`);
       }
     }
 
-    if (batchesSucceeded === 0 && batches.length > 0) {
+    if (chunksSucceeded === 0 && deepChunks.length > 0) {
       throw new AllBatchesFailedError(
-        "Gemini API call failed for all batches. Check your authentication and network.",
+        "Gemini API call failed for all chunks. Check your authentication and network.",
       );
     }
+    const deepReviewMs = performance.now() - deepStart;
 
     // ── Step 8: Annotate findings with risk multipliers ───────────────────────
     // (Risk multiplier is metadata for display; actual scoring is in ReportBuilder)
@@ -322,10 +370,15 @@ export class RunCodeReview {
         !this.feedbackManager.isFalsePositive(f.file, f.line, f.snippet ?? ""),
     );
 
-    // ── Step 9: Aggregate AI sub-scores across batches ────────────────────────
-    const aiSubScores = this.aggregateSubScores(batchSubScores, previousState);
+    // ── Step 9: Aggregate AI sub-scores (shallow + deep) ──────────────────────
+    const aiSubScores = this.aggregateSubScores(
+      chunkSubScores,
+      shallowResult,
+      previousState,
+    );
 
     // ── Step 10: Generate executive summary ───────────────────────────────────
+    const summaryStart = performance.now();
     onProgress("Generating Executive Summary...");
 
     // Prime the report builder to calculate the score for the summary prompt
@@ -366,7 +419,28 @@ export class RunCodeReview {
     }
 
     const finalScore = this.reportBuilder.calculateFinalScore();
+    const summaryMs = performance.now() - summaryStart;
 
+    // ── Compute timing stats ─────────────────────────────────────────────────
+    const totalMs = performance.now() - t0;
+    const timingStats: TimingStats = {
+      totalMs: Math.round(totalMs),
+      scanMs: Math.round(scanMs),
+      auditMs: Math.round(auditMs),
+      shallowReviewMs: Math.round(shallowReviewMs),
+      deepReviewMs: Math.round(deepReviewMs),
+      summaryMs: Math.round(summaryMs),
+      deepChunkCount: deepChunks.length,
+      timestamp: new Date().toISOString(),
+    };
+
+    logDebug(
+      `Timing: total=${(totalMs / 1000).toFixed(1)}s, scan=${(scanMs / 1000).toFixed(1)}s, audit=${(auditMs / 1000).toFixed(1)}s, ` +
+        `shallow=${(shallowReviewMs / 1000).toFixed(1)}s, deep=${(deepReviewMs / 1000).toFixed(1)}s (${deepChunks.length} chunks), ` +
+        `summary=${(summaryMs / 1000).toFixed(1)}s`,
+    );
+
+    this.reportBuilder.setTimingStats(timingStats);
     // ── Step 11: Persist the cache ────────────────────────────────────────────
     const cacheState: CacheState = {
       fileHashes: currentFileHashes,
@@ -380,6 +454,7 @@ export class RunCodeReview {
       codeDuplicationPercentage: aiSubScores.codeDuplicationPercentage,
       cyclomaticComplexity: aiSubScores.cyclomaticComplexity,
       maintainabilityIndex: aiSubScores.maintainabilityIndex,
+      timingStats,
     };
 
     try {
@@ -402,6 +477,7 @@ export class RunCodeReview {
       executiveSummary,
       aiSubScores,
       fileHashes: currentFileHashes,
+      timingStats,
     };
 
     logDebug(`Review complete. Final score: ${finalScore}/100.`);
@@ -412,6 +488,7 @@ export class RunCodeReview {
 
   private buildBatches(
     files: Array<{ filePath: string; content: string }>,
+    charLimit: number = CHUNK_CHAR_THRESHOLD,
   ): CodeReviewBatch[] {
     const batches: CodeReviewBatch[] = [];
     const HEADER = "Review the following code:\n\n";
@@ -420,10 +497,7 @@ export class RunCodeReview {
 
     for (const f of files) {
       const fileXml = `<file path="${f.filePath}">\n${f.content}\n</file>\n\n`;
-      if (
-        current.length + fileXml.length > CHAR_THRESHOLD &&
-        current !== HEADER
-      ) {
+      if (current.length + fileXml.length > charLimit && current !== HEADER) {
         batches.push({ payload: current, files: currentFiles });
         current = HEADER + fileXml;
         currentFiles = [f.filePath];
@@ -466,30 +540,51 @@ export class RunCodeReview {
   }
 
   private aggregateSubScores(
-    batchScores: AiSubScores[],
+    chunkScores: AiSubScores[],
+    shallowResult: ShallowReviewResult | null,
     previousState: CacheState | null,
   ): AiSubScores {
-    const n = batchScores.length;
-    if (n === 0) {
-      return {
-        namingConventionScore: previousState?.namingConventionScore,
-        solidPrinciplesScore: previousState?.solidPrinciplesScore,
-        codeDuplicationPercentage:
-          previousState?.codeDuplicationPercentage ?? 0,
-        cyclomaticComplexity: previousState?.cyclomaticComplexity ?? 0,
-        maintainabilityIndex: previousState?.maintainabilityIndex ?? 0,
-      };
+    // Deep chunk scores: average naming + SOLID across all chunks
+    const n = chunkScores.length;
+    let namingConventionScore: number | undefined;
+    let solidPrinciplesScore: number | undefined;
+
+    if (n > 0) {
+      const sumNaming = chunkScores.reduce(
+        (acc, s) => acc + ((s.namingConventionScore as number) ?? 0),
+        0,
+      );
+      const sumSolid = chunkScores.reduce(
+        (acc, s) => acc + ((s.solidPrinciplesScore as number) ?? 0),
+        0,
+      );
+      namingConventionScore = Math.round(sumNaming / n);
+      solidPrinciplesScore = Math.round(sumSolid / n);
+    } else {
+      namingConventionScore = previousState?.namingConventionScore;
+      solidPrinciplesScore = previousState?.solidPrinciplesScore;
     }
 
-    const sum = (key: keyof AiSubScores) =>
-      batchScores.reduce((acc, s) => acc + ((s[key] as number) ?? 0), 0);
+    // Shallow result provides global metrics; fall back to cache if unavailable
+    const codeDuplicationPercentage =
+      shallowResult?.codeDuplicationPercentage ??
+      previousState?.codeDuplicationPercentage ??
+      0;
+    const cyclomaticComplexity =
+      shallowResult?.cyclomaticComplexity ??
+      previousState?.cyclomaticComplexity ??
+      0;
+    const maintainabilityIndex =
+      shallowResult?.maintainabilityIndex ??
+      previousState?.maintainabilityIndex ??
+      0;
 
     return {
-      namingConventionScore: Math.round(sum("namingConventionScore") / n),
-      solidPrinciplesScore: Math.round(sum("solidPrinciplesScore") / n),
-      codeDuplicationPercentage: sum("codeDuplicationPercentage") / n,
-      cyclomaticComplexity: sum("cyclomaticComplexity") / n,
-      maintainabilityIndex: sum("maintainabilityIndex") / n,
+      namingConventionScore,
+      solidPrinciplesScore,
+      codeDuplicationPercentage,
+      cyclomaticComplexity,
+      maintainabilityIndex,
     };
   }
 

@@ -83,6 +83,37 @@ export interface IAiProvider {
   ): Promise<CodeBatchResult>;
 
   /**
+   * Shallow / fast whole-codebase scan.
+   *
+   * Sends the **entire** codebase in a single request with a lightweight
+   * prompt that only asks for global metrics (code duplication %,
+   * cyclomatic complexity, maintainability index).
+   *
+   * This corresponds to scores that require 100% codebase visibility
+   * and cannot be computed per-chunk.
+   *
+   * @param payload   The combined XML-tagged payload of ALL files.
+   * @returns         Global-level sub-scores only (no findings).
+   */
+  shallowReviewFull(payload: string): Promise<ShallowReviewResult>;
+
+  /**
+   * Deep / detailed review of a small code chunk (~5k tokens).
+   *
+   * Called once per chunk. Produces detailed findings plus per-chunk
+   * naming and SOLID scores. Each call is fast because the payload
+   * is small.
+   *
+   * @param batch     A chunk-sized code payload.
+   * @param context   Optional strings injected into the system prompt.
+   * @returns         The findings and sub-scores for this chunk.
+   */
+  deepReviewChunk(
+    batch: CodeReviewBatch,
+    context?: { skillsContext?: string; feedbackSuffix?: string },
+  ): Promise<CodeBatchResult>;
+
+  /**
    * Generate a three-paragraph executive summary from the aggregated findings.
    *
    * The provider formats the prompt and calls the AI model.
@@ -130,4 +161,14 @@ export interface IAiProvider {
 export interface CodeBatchResult {
   findings: ReviewFinding[];
   subScores: AiSubScores;
+}
+
+/**
+ * Result of the shallow / oneshot whole-codebase scan.
+ * Contains only the global metrics that require full codebase visibility.
+ */
+export interface ShallowReviewResult {
+  codeDuplicationPercentage: number;
+  cyclomaticComplexity: number;
+  maintainabilityIndex: number;
 }

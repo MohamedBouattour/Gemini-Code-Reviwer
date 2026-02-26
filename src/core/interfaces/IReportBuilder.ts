@@ -16,6 +16,7 @@ import type {
   InfraFindingEntity,
   ExecutiveSummary,
   AiSubScores,
+  TimingStats,
 } from "../entities/ProjectReport.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -56,6 +57,9 @@ export interface IReportBuilder {
 
   /** Supply supplementary AI batch sub-scores. */
   setAiScores(scores: AiSubScores): void;
+
+  /** Supply pipeline timing telemetry. */
+  setTimingStats(stats: TimingStats): void;
 
   /**
    * Calculate the final repository score using the Priority Weight system.

@@ -17,6 +17,7 @@ import type {
   IAiProvider,
   CodeReviewBatch,
   CodeBatchResult,
+  ShallowReviewResult,
   ExecutiveSummaryInput,
 } from "../../core/interfaces/IAiProvider.js";
 import type {
@@ -111,6 +112,96 @@ const CODE_REVIEW_RESPONSE_SCHEMA = {
   ],
 };
 
+/**
+ * Schema for the shallow / oneshot whole-codebase scan.
+ * Only returns global-level metrics — no findings array.
+ */
+const SHALLOW_REVIEW_SCHEMA = {
+  type: "OBJECT",
+  properties: {
+    codeDuplicationPercentage: {
+      type: "NUMBER",
+      description: "Estimated % of duplicated code across the entire codebase.",
+    },
+    cyclomaticComplexity: {
+      type: "NUMBER",
+      description:
+        "Estimated average cyclomatic complexity across all functions.",
+    },
+    maintainabilityIndex: {
+      type: "NUMBER",
+      description:
+        "Estimated maintainability index 0–100 for the whole codebase.",
+    },
+  },
+  required: [
+    "codeDuplicationPercentage",
+    "cyclomaticComplexity",
+    "maintainabilityIndex",
+  ],
+};
+
+/**
+ * Schema for the deep / per-chunk review.
+ * Returns detailed findings plus per-chunk naming and SOLID scores.
+ */
+const DEEP_CHUNK_REVIEW_SCHEMA = {
+  type: "OBJECT",
+  properties: {
+    namingConventionScore: {
+      type: "NUMBER",
+      description: "Score 0–100 for naming conventions in this chunk.",
+    },
+    solidPrinciplesScore: {
+      type: "NUMBER",
+      description: "Score 0–100 for SOLID principles in this chunk.",
+    },
+    findings: {
+      type: "ARRAY",
+      items: {
+        type: "OBJECT",
+        properties: {
+          file: { type: "STRING", description: "Exact relative file path." },
+          line: { type: "NUMBER", description: "Line number." },
+          snippet: {
+            type: "STRING",
+            description: "Specific snippet being flagged.",
+          },
+          suggestion: { type: "STRING", description: "Actionable suggestion." },
+          category: {
+            type: "STRING",
+            description: "Focus area (Naming, SOLID, Security/Injection, etc.)",
+          },
+          priority: { type: "STRING", enum: ["low", "medium", "high"] },
+          recommendedFix: {
+            type: "OBJECT",
+            description: "For HIGH-priority Security findings only.",
+            properties: {
+              before: {
+                type: "STRING",
+                description: "1–4 lines of vulnerable code.",
+              },
+              after: {
+                type: "STRING",
+                description: "1–4 lines of corrected code.",
+              },
+            },
+          },
+        },
+        required: [
+          "file",
+          "line",
+          "snippet",
+          "suggestion",
+          "category",
+          "priority",
+        ],
+      },
+    },
+  },
+  required: ["namingConventionScore", "solidPrinciplesScore", "findings"],
+};
+
 const EXECUTIVE_SUMMARY_SCHEMA = {
   type: "OBJECT",
   properties: {
@@ -201,8 +292,13 @@ export interface ApiResponse {
 
 /**
  * POST to a Code Assist method (e.g. `generateContent`, `loadCodeAssist`).
- * Throws on non-2xx responses.
+ * Automatically retries on 429 (rate limit) responses, waiting for the
+ * server-suggested cooldown period before each retry.
+ * Throws on non-2xx responses after retries are exhausted.
  */
+const MAX_RETRIES = 3;
+const DEFAULT_BACKOFF_SECONDS = [15, 30, 60];
+
 async function codeAssistPost(
   method: string,
   body: unknown,
@@ -210,23 +306,51 @@ async function codeAssistPost(
   logDebug: (msg: string) => void,
 ): Promise<ApiResponse> {
   const endpoint = `${CODE_ASSIST_BASE_URL}:${method}`;
-  logDebug(`POST ${endpoint}`);
 
-  const res = await fetch(endpoint, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(body),
-  });
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    logDebug(
+      `POST ${endpoint}${attempt > 0 ? ` (retry ${attempt}/${MAX_RETRIES})` : ""}`,
+    );
 
-  if (!res.ok) {
+    const res = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    });
+
+    if (res.ok) {
+      return res.json() as Promise<ApiResponse>;
+    }
+
     const errText = await res.text();
+
+    // Retry on 429 rate-limit errors
+    if (res.status === 429 && attempt < MAX_RETRIES) {
+      // Try to parse "quota will reset after Ns" from the error body
+      const match = errText.match(/reset after (\d+)s/);
+      const waitSeconds = match
+        ? parseInt(match[1], 10) + 2 // add 2s safety margin
+        : (DEFAULT_BACKOFF_SECONDS[attempt] ?? 30);
+
+      logDebug(
+        `Rate limited (429). Waiting ${waitSeconds}s before retry ${attempt + 1}/${MAX_RETRIES}...`,
+      );
+      await sleep(waitSeconds * 1000);
+      continue;
+    }
+
     throw new Error(`HTTP ${res.status} on ${method}: ${errText}`);
   }
 
-  return res.json() as Promise<ApiResponse>;
+  // Should not be reached, but satisfies TypeScript
+  throw new Error(`Exhausted ${MAX_RETRIES} retries on ${method}`);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /**
@@ -291,6 +415,111 @@ export class GeminiProvider implements IAiProvider {
 
     const findings = this.extractFindings(parsed);
     const subScores = this.extractSubScores(parsed);
+
+    return { findings, subScores };
+  }
+
+  // ── IAiProvider.shallowReviewFull ──────────────────────────────────────────
+
+  async shallowReviewFull(payload: string): Promise<ShallowReviewResult> {
+    const systemPrompt = this.buildShallowSystemPrompt();
+
+    const requestBody = {
+      model: GeminiModel.FLASH,
+      project: this.cloudProject,
+      request: {
+        systemInstruction: { role: "system", parts: [{ text: systemPrompt }] },
+        contents: [{ role: "user", parts: [{ text: payload }] }],
+        generationConfig: {
+          temperature: 0.1,
+          responseMimeType: "application/json",
+          responseSchema: SHALLOW_REVIEW_SCHEMA,
+        },
+      },
+    };
+
+    const estimatedTokens = Math.ceil(payload.length / 4);
+    this.logDebug(
+      `shallowReviewFull: ~${estimatedTokens} tokens, model: ${GeminiModel.FLASH} (oneshot)`,
+    );
+
+    const json = await codeAssistPost(
+      "generateContent",
+      requestBody,
+      this.accessToken,
+      this.logDebug,
+    );
+
+    const responseText = extractResponseText(json);
+    const parsed = JSON.parse(responseText) as Record<string, unknown>;
+
+    return {
+      codeDuplicationPercentage:
+        typeof parsed["codeDuplicationPercentage"] === "number"
+          ? (parsed["codeDuplicationPercentage"] as number)
+          : 0,
+      cyclomaticComplexity:
+        typeof parsed["cyclomaticComplexity"] === "number"
+          ? (parsed["cyclomaticComplexity"] as number)
+          : 0,
+      maintainabilityIndex:
+        typeof parsed["maintainabilityIndex"] === "number"
+          ? (parsed["maintainabilityIndex"] as number)
+          : 50,
+    };
+  }
+
+  // ── IAiProvider.deepReviewChunk ───────────────────────────────────────────
+
+  async deepReviewChunk(
+    batch: CodeReviewBatch,
+    context: { skillsContext?: string; feedbackSuffix?: string } = {},
+  ): Promise<CodeBatchResult> {
+    const systemPrompt = this.buildDeepChunkSystemPrompt(
+      context.skillsContext ?? "",
+      context.feedbackSuffix ?? "",
+    );
+
+    const requestBody = {
+      model: GeminiModel.FLASH,
+      project: this.cloudProject,
+      request: {
+        systemInstruction: { role: "system", parts: [{ text: systemPrompt }] },
+        contents: [{ role: "user", parts: [{ text: batch.payload }] }],
+        generationConfig: {
+          temperature: 0.2,
+          responseMimeType: "application/json",
+          responseSchema: DEEP_CHUNK_REVIEW_SCHEMA,
+        },
+      },
+    };
+
+    const estimatedTokens = Math.ceil(batch.payload.length / 4);
+    this.logDebug(
+      `deepReviewChunk: ${batch.files.length} file(s), ~${estimatedTokens} tokens, model: ${GeminiModel.FLASH}`,
+    );
+
+    const json = await codeAssistPost(
+      "generateContent",
+      requestBody,
+      this.accessToken,
+      this.logDebug,
+    );
+
+    const responseText = extractResponseText(json);
+    const parsed = JSON.parse(responseText) as Record<string, unknown>;
+
+    const findings = this.extractFindings(parsed);
+    const subScores: AiSubScores = {
+      namingConventionScore:
+        typeof parsed["namingConventionScore"] === "number"
+          ? (parsed["namingConventionScore"] as number)
+          : undefined,
+      solidPrinciplesScore:
+        typeof parsed["solidPrinciplesScore"] === "number"
+          ? (parsed["solidPrinciplesScore"] as number)
+          : undefined,
+    };
 
     return { findings, subScores };
   }
@@ -462,6 +691,40 @@ Review the code thoroughly for:
 
 When finding issues, give a very small, specific 'snippet' (a few words or one statement)
 so we can accurately locate it in the codebase.
+
+Additional project context:
+${skillsContext}${feedbackSuffix}`;
+  }
+
+  private buildShallowSystemPrompt(): string {
+    return `You are an expert code analyst. Analyse the ENTIRE codebase provided and return ONLY global-level metrics.
+
+Your task:
+1. Estimate the percentage of duplicated / copy-pasted code across the whole project.
+2. Estimate the average cyclomatic complexity of all functions.
+3. Estimate the overall maintainability index (0–100, higher = more maintainable).
+
+Do NOT list individual findings. Focus purely on the three numeric metrics.
+Be precise and honest — do not round to convenient numbers.`;
+  }
+
+  private buildDeepChunkSystemPrompt(
+    skillsContext: string,
+    feedbackSuffix: string,
+  ): string {
+    return `You are an expert AI Security Researcher and code reviewer.
+Review this code chunk thoroughly for:
+- Naming conventions and semantic names
+- SOLID principles and design patterns
+- Security vulnerabilities (injection, XSS, auth bypass, etc.)
+- Logic and architectural issues
+- Performance anti-patterns
+
+## FINDING QUALITY GUIDELINES
+- Be specific: flag real problems, not style opinions.
+- Prefer fewer, high-quality findings over a long list of minor noise.
+- Give a very small, specific 'snippet' (a few words or one statement)
+  so we can accurately locate it in the codebase.
 
 Additional project context:
 ${skillsContext}${feedbackSuffix}`;

@@ -61,6 +61,29 @@ export interface AiSubScores {
   maintainabilityIndex?: number;
 }
 
+/**
+ * Timing telemetry for each phase of the review pipeline.
+ * All durations are in milliseconds.
+ */
+export interface TimingStats {
+  /** Total wall-clock time for the entire review run. */
+  totalMs: number;
+  /** File scanning + hashing phase. */
+  scanMs: number;
+  /** All auditors (secrets, infra, etc.). */
+  auditMs: number;
+  /** Shallow oneshot global-metrics scan. */
+  shallowReviewMs: number;
+  /** Sum of all deep chunk review calls. */
+  deepReviewMs: number;
+  /** Executive summary generation. */
+  summaryMs: number;
+  /** Number of deep chunks processed. */
+  deepChunkCount: number;
+  /** Timestamp when the review was run. */
+  timestamp: string;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // ProjectReport — the complete aggregated review output
 // ─────────────────────────────────────────────────────────────────────────────
@@ -90,4 +113,6 @@ export interface ProjectReport {
    * Used by the incremental review cache to skip unchanged files.
    */
   fileHashes: Record<string, string>;
+  /** Pipeline timing telemetry. */
+  timingStats?: TimingStats;
 }
