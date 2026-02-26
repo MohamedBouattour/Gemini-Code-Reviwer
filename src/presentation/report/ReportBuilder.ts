@@ -256,9 +256,13 @@ function formatScore(score: number | undefined, useChalk: boolean): string {
 
 /** Render a ```diff Fix-It block. */
 function renderFixBlock(
-  fix: { before: string; after: string },
+  fix: { before?: string; after?: string },
   useChalk: boolean,
 ): string {
+  if (!fix || typeof fix.before !== "string" || typeof fix.after !== "string") {
+    return "";
+  }
+
   const beforeLines = fix.before.split("\n").map((l) => `- ${l}`);
   const afterLines = fix.after.split("\n").map((l) => `+ ${l}`);
   const allLines = [...beforeLines, ...afterLines];

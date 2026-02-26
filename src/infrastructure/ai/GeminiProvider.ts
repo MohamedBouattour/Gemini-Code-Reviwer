@@ -451,26 +451,8 @@ Review the code thoroughly for:
 - SOLID principles and design patterns
 - Code benchmarks and performance optimization
 - Logic and architectural correctness
-
-## SECURITY: Tainted Input / Injection Analysis
-Perform multi-file taint analysis:
-1. Identify user-controlled inputs: HTTP request parameters, body, headers, query strings,
-   form fields, URL path segments, WebSocket messages, gRPC request fields.
-2. Trace these tainted values through the call graph — across service calls, repositories,
-   utilities — down to sinks: DB queries (SQL/NoSQL), file system operations, shell
-   commands, LDAP queries, XML parsers, deserializers, template engines.
-3. Flag any path where tainted data reaches a sink without adequate sanitisation
-   (parameterised queries, allowlisting, HTML-encoding, etc.).
-   → Report these as category: "Security/Injection"
-4. Also flag: insecure direct object references (IDOR), mass-assignment, path traversal,
-   broken access control (missing auth checks before sensitive operations).
-
-## FIX-IT SNIPPETS (required for HIGH security findings)
-For any finding with priority="high" AND category="Security/Injection" or "Security",
-you MUST also provide a "recommendedFix" object with:
-  - "before": the vulnerable/problematic code as-is (1–4 lines)
-  - "after":  the corrected, secure replacement (1–4 lines)
-Keep snippets minimal and focused — they will be rendered as a diff block in the report.
+- Security checks
+- Dependency checks
 
 ## FINDING QUALITY GUIDELINES
 - Be specific: flag real problems, not style opinions.
