@@ -5,13 +5,13 @@
   "type": "module",
   "main": "dist/index.js",
   "bin": {
-    "gemini-code-reviewer": "dist/cli.js"
+    "gemini-code-reviewer": "dist/presentation/cli/main.js"
   },
   "scripts": {
     "build": "tsc",
     "build:watch": "tsc --watch",
-    "start": "node dist/cli.js",
-    "dev": "ts-node --esm src/cli.ts",
+    "start": "node dist/presentation/cli/main.js",
+    "dev": "ts-node --esm src/presentation/cli/main.ts",
     "test": "vitest run",
     "lint": "eslint src --ext .ts",
     "format": "prettier --write src",
@@ -37,11 +37,13 @@
     "commander": "^12.1.0",
     "dotenv": "^16.4.5",
     "fast-glob": "^3.3.2",
+    "fs-extra": "^11.2.0",
     "google-auth-library": "^10.6.1",
     "open": "^11.0.0",
     "ora": "^8.1.0"
   },
   "devDependencies": {
+    "@types/fs-extra": "^11.0.4",
     "@types/node": "^20.14.0",
     "prettier": "^3.3.2",
     "rimraf": "^5.0.9",
