@@ -8,13 +8,10 @@
  *   - Model selection (FLASH for all reviews, PRO for summary/skills)
  *   - API call mechanics (codeAssistPost, extractResponseText)
  *   - Response parsing & error handling
+ *   - Debug persistence: when debug=true every call is saved to
+ *     .gemini-code-reviewer/<timestamp>_<callName>.json via AiCallLogger
  *
  * The application layer (RunCodeReview) is completely unaware of these details.
- *
- * ## Single-call design
- *   reviewProject() sends ONE request to Gemini 2.5 Flash with the full
- *   code + IaC + manifest payload, returning code findings, infra findings,
- *   and sub-scores in a single structured JSON response.
  */
 
 import { GeminiModel, CODE_ASSIST_BASE_URL } from "../../shared/constants.js";
@@ -47,12 +44,12 @@ import {
   INFRA_AUDIT_SYSTEM_PROMPT,
   DEEP_REVIEW_SYSTEM_PROMPT,
 } from "./prompts.js";
+import { AiCallLogger } from "./AiCallLogger.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // JSON schemas (Gemini structured output)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** Shared finding schema used for both code and infra findings. */
 const CODE_FINDING_SCHEMA = {
   type: "OBJECT",
   properties: {
@@ -71,17 +68,10 @@ const CODE_FINDING_SCHEMA = {
     priority: { type: "STRING", enum: ["low", "medium", "high"] },
     recommendedFix: {
       type: "OBJECT",
-      description:
-        "Before/after pair for HIGH-priority Security findings only.",
+      description: "Before/after pair for HIGH-priority Security findings only.",
       properties: {
-        before: {
-          type: "STRING",
-          description: "1–4 lines of vulnerable code.",
-        },
-        after: {
-          type: "STRING",
-          description: "1–4 lines of corrected code.",
-        },
+        before: { type: "STRING", description: "1–4 lines of vulnerable code." },
+        after: { type: "STRING", description: "1–4 lines of corrected code." },
       },
     },
   },
@@ -108,39 +98,17 @@ const INFRA_FINDING_SCHEMA = {
     title: { type: "STRING" },
     description: { type: "STRING" },
     remediation: { type: "STRING" },
-    severity: {
-      type: "STRING",
-      enum: ["critical", "high", "medium", "low"],
-    },
+    severity: { type: "STRING", enum: ["critical", "high", "medium", "low"] },
   },
-  required: [
-    "file",
-    "category",
-    "title",
-    "description",
-    "remediation",
-    "severity",
-  ],
+  required: ["file", "category", "title", "description", "remediation", "severity"],
 };
 
-/**
- * Code review response schema.
- */
 const CODE_REVIEW_SCHEMA = {
   type: "OBJECT",
   properties: {
-    score: {
-      type: "NUMBER",
-      description: "Overall code quality score 0–100.",
-    },
-    solidPrinciplesScore: {
-      type: "NUMBER",
-      description: "SOLID adherence score 0–100.",
-    },
-    namingConventionScore: {
-      type: "NUMBER",
-      description: "Naming quality score 0–100.",
-    },
+    score: { type: "NUMBER", description: "Overall code quality score 0–100." },
+    solidPrinciplesScore: { type: "NUMBER", description: "SOLID adherence score 0–100." },
+    namingConventionScore: { type: "NUMBER", description: "Naming quality score 0–100." },
     maintainabilityIndex: {
       type: "NUMBER",
       description: "Maintainability index 0–100 (higher = more maintainable).",
@@ -170,16 +138,12 @@ const CODE_REVIEW_SCHEMA = {
   ],
 };
 
-/**
- * Infrastructure review response schema.
- */
 const INFRA_REVIEW_SCHEMA = {
   type: "OBJECT",
   properties: {
     infraFindings: {
       type: "ARRAY",
-      description:
-        "IaC misconfigurations, container security, SCA/CVE findings.",
+      description: "IaC misconfigurations, container security, SCA/CVE findings.",
       items: INFRA_FINDING_SCHEMA,
     },
   },
@@ -211,10 +175,6 @@ const SKILLS_SCHEMA = {
     "architecture-patterns",
   ],
 };
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Smart File Scoring schemas
-// ─────────────────────────────────────────────────────────────────────────────
 
 const SCORED_FILE_SCHEMA = {
   type: "OBJECT",
@@ -307,7 +267,7 @@ const DEEP_REVIEW_SCHEMA = {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Response shape (minimal typed wrapper to avoid `any` everywhere)
+// Response shape
 // ─────────────────────────────────────────────────────────────────────────────
 
 export interface ApiResponse {
@@ -325,10 +285,6 @@ export interface ApiResponse {
 const MAX_RETRIES = 3;
 const DEFAULT_BACKOFF_SECONDS = [15, 30, 60];
 
-/**
- * POST to a Code Assist method (e.g. `generateContent`, `loadCodeAssist`).
- * Automatically retries on 429 (rate limit) responses.
- */
 async function codeAssistPost(
   method: string,
   body: unknown,
@@ -354,9 +310,7 @@ async function codeAssistPost(
     const httpMs = performance.now() - httpStart;
 
     if (res.ok) {
-      logDebug(
-        `[timing:http] ${method} → HTTP ${res.status} in ${httpMs.toFixed(0)}ms`,
-      );
+      logDebug(`[timing:http] ${method} → HTTP ${res.status} in ${httpMs.toFixed(0)}ms`);
       return res.json() as Promise<ApiResponse>;
     }
 
@@ -370,10 +324,7 @@ async function codeAssistPost(
       const waitSeconds = match
         ? parseInt(match[1], 10) + 2
         : (DEFAULT_BACKOFF_SECONDS[attempt] ?? 30);
-
-      logDebug(
-        `Rate limited (429). Waiting ${waitSeconds}s before retry ${attempt + 1}/${MAX_RETRIES}...`,
-      );
+      logDebug(`Rate limited (429). Waiting ${waitSeconds}s before retry ${attempt + 1}/${MAX_RETRIES}...`);
       await sleep(waitSeconds * 1000);
       continue;
     }
@@ -397,11 +348,16 @@ function extractResponseText(json: ApiResponse): string {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export class GeminiProvider implements IAiProvider {
+  private readonly callLogger: AiCallLogger;
+
   constructor(
     private readonly accessToken: string,
     private readonly cloudProject: string,
     private readonly logDebug: (msg: string) => void,
-  ) {}
+    debug = false,
+  ) {
+    this.callLogger = new AiCallLogger(debug, logDebug);
+  }
 
   // ── IAiProvider.reviewProject ─────────────────────────────────────────────
 
@@ -412,11 +368,11 @@ export class GeminiProvider implements IAiProvider {
       request.skillsContext ?? "",
       request.feedbackSuffix ?? "",
     );
-
     const userPrompt = `## SOURCE CODE\n\n${request.codePayload}`;
+    const model = GeminiModel.FLASH;
 
     const requestBody = {
-      model: GeminiModel.FLASH,
+      model,
       project: this.cloudProject,
       request: {
         systemInstruction: { role: "system", parts: [{ text: systemPrompt }] },
@@ -430,19 +386,16 @@ export class GeminiProvider implements IAiProvider {
     };
 
     const estimatedTokens = Math.ceil(userPrompt.length / 4);
-    this.logDebug(
-      `reviewProject: ~${estimatedTokens} tokens, model: ${GeminiModel.FLASH}`,
-    );
+    this.logDebug(`reviewProject: ~${estimatedTokens} tokens, model: ${model}`);
 
-    const json = await codeAssistPost(
-      "generateContent",
-      requestBody,
-      this.accessToken,
-      this.logDebug,
-    );
+    const start = performance.now();
+    const json = await codeAssistPost("generateContent", requestBody, this.accessToken, this.logDebug);
+    const durationMs = Math.round(performance.now() - start);
 
     const responseText = extractResponseText(json);
     const parsed = JSON.parse(responseText) as Record<string, unknown>;
+
+    this.callLogger.persist("reviewProject", model, requestBody, parsed, durationMs, estimatedTokens);
 
     return {
       codeFindings: this.extractCodeFindings(parsed),
@@ -455,8 +408,7 @@ export class GeminiProvider implements IAiProvider {
   async reviewInfrastructure(
     request: InfraReviewRequest,
   ): Promise<InfraReviewResult> {
-    const systemPrompt = INFRA_REVIEW_SYSTEM_PROMPT;
-
+    const model = GeminiModel.FLASH;
     const userPrompt = this.buildInfraUserPrompt(
       request.iacFiles,
       request.dependencyManifests,
@@ -464,10 +416,10 @@ export class GeminiProvider implements IAiProvider {
     );
 
     const requestBody = {
-      model: GeminiModel.FLASH,
+      model,
       project: this.cloudProject,
       request: {
-        systemInstruction: { role: "system", parts: [{ text: systemPrompt }] },
+        systemInstruction: { role: "system", parts: [{ text: INFRA_REVIEW_SYSTEM_PROMPT }] },
         contents: [{ role: "user", parts: [{ text: userPrompt }] }],
         generationConfig: {
           temperature: 0.1,
@@ -478,23 +430,18 @@ export class GeminiProvider implements IAiProvider {
     };
 
     const estimatedTokens = Math.ceil(userPrompt.length / 4);
-    this.logDebug(
-      `reviewInfrastructure: ~${estimatedTokens} tokens, model: ${GeminiModel.FLASH}`,
-    );
+    this.logDebug(`reviewInfrastructure: ~${estimatedTokens} tokens, model: ${model}`);
 
-    const json = await codeAssistPost(
-      "generateContent",
-      requestBody,
-      this.accessToken,
-      this.logDebug,
-    );
+    const start = performance.now();
+    const json = await codeAssistPost("generateContent", requestBody, this.accessToken, this.logDebug);
+    const durationMs = Math.round(performance.now() - start);
 
     const responseText = extractResponseText(json);
     const parsed = JSON.parse(responseText) as Record<string, unknown>;
 
-    return {
-      infraFindings: this.extractInfraFindings(parsed),
-    };
+    this.callLogger.persist("reviewInfrastructure", model, requestBody, parsed, durationMs, estimatedTokens);
+
+    return { infraFindings: this.extractInfraFindings(parsed) };
   }
 
   // ── IAiProvider.generateExecutiveSummary ─────────────────────────────────
@@ -502,10 +449,11 @@ export class GeminiProvider implements IAiProvider {
   async generateExecutiveSummary(
     input: ExecutiveSummaryInput,
   ): Promise<ExecutiveSummary | undefined> {
+    const model = GeminiModel.FLASH;
     const prompt = EXECUTIVE_SUMMARY_PROMPT(input);
 
     const requestBody = {
-      model: GeminiModel.FLASH,
+      model,
       project: this.cloudProject,
       request: {
         contents: [{ role: "user", parts: [{ text: prompt }] }],
@@ -518,18 +466,21 @@ export class GeminiProvider implements IAiProvider {
     };
 
     try {
-      const json = await codeAssistPost(
-        "generateContent",
-        requestBody,
-        this.accessToken,
-        this.logDebug,
-      );
+      const start = performance.now();
+      const json = await codeAssistPost("generateContent", requestBody, this.accessToken, this.logDebug);
+      const durationMs = Math.round(performance.now() - start);
+
       const text = extractResponseText(json);
-      const parsed = JSON.parse(text) as {
-        what?: string;
-        impact?: string;
-        risk?: string;
-      };
+      const parsed = JSON.parse(text) as { what?: string; impact?: string; risk?: string };
+
+      this.callLogger.persist(
+        "generateExecutiveSummary",
+        model,
+        requestBody,
+        parsed,
+        durationMs,
+        Math.ceil(prompt.length / 4),
+      );
 
       return {
         what: parsed.what ?? "Summary unavailable.",
@@ -546,8 +497,10 @@ export class GeminiProvider implements IAiProvider {
   // ── IAiProvider.generateSkills ───────────────────────────────────────────
 
   async generateSkills(prompt: string): Promise<Record<string, string>> {
+    const model = GeminiModel.FLASH;
+
     const requestBody = {
-      model: GeminiModel.FLASH,
+      model,
       project: this.cloudProject,
       request: {
         systemInstruction: {
@@ -563,20 +516,25 @@ export class GeminiProvider implements IAiProvider {
       },
     };
 
-    this.logDebug(
-      `generateSkills: model=${GeminiModel.FLASH}, prompt=${prompt.length} chars`,
-    );
+    this.logDebug(`generateSkills: model=${model}, prompt=${prompt.length} chars`);
 
-    const json = await codeAssistPost(
-      "generateContent",
-      requestBody,
-      this.accessToken,
-      this.logDebug,
-    );
+    const start = performance.now();
+    const json = await codeAssistPost("generateContent", requestBody, this.accessToken, this.logDebug);
+    const durationMs = Math.round(performance.now() - start);
+
     const responseText = extractResponseText(json);
 
     try {
-      return JSON.parse(responseText) as Record<string, string>;
+      const parsed = JSON.parse(responseText) as Record<string, string>;
+      this.callLogger.persist(
+        "generateSkills",
+        model,
+        requestBody,
+        parsed,
+        durationMs,
+        Math.ceil(prompt.length / 4),
+      );
+      return parsed;
     } catch {
       throw new Error(
         `Gemini returned non-JSON for skill generation: ${responseText.slice(0, 200)}`,
@@ -586,18 +544,12 @@ export class GeminiProvider implements IAiProvider {
 
   // ── IAiProvider.auditInfra (Call 1 — Smart File Scoring) ─────────────────
 
-  /**
-   * Sends the full file tree + infra files + package.json to Gemini.
-   * Returns a weight score (0–100) for every file plus boilerplate flags.
-   *
-   * Temperature 0.0 — fully deterministic, identical input must yield
-   * identical weights across runs.
-   */
   async auditInfra(request: InfraAuditRequest): Promise<InfraAuditResult> {
+    const model = GeminiModel.FLASH;
     const userPrompt = this.buildInfraAuditUserPrompt(request);
 
     const requestBody = {
-      model: GeminiModel.FLASH,
+      model,
       project: this.cloudProject,
       request: {
         systemInstruction: {
@@ -614,21 +566,19 @@ export class GeminiProvider implements IAiProvider {
     };
 
     const estimatedTokens = Math.ceil(userPrompt.length / 4);
-    this.logDebug(
-      `auditInfra: ~${estimatedTokens} tokens, files=${request.fileTree.length}, model=${GeminiModel.FLASH}`,
-    );
+    this.logDebug(`auditInfra: ~${estimatedTokens} tokens, files=${request.fileTree.length}, model=${model}`);
 
-    const json = await codeAssistPost(
-      "generateContent",
-      requestBody,
-      this.accessToken,
-      this.logDebug,
-    );
+    const start = performance.now();
+    const json = await codeAssistPost("generateContent", requestBody, this.accessToken, this.logDebug);
+    const durationMs = Math.round(performance.now() - start);
 
     const responseText = extractResponseText(json);
 
     try {
       const parsed = JSON.parse(responseText) as InfraAuditResult;
+
+      this.callLogger.persist("auditInfra", model, requestBody, parsed, durationMs, estimatedTokens);
+
       this.logDebug(
         `auditInfra: ${parsed.files.length} files scored, ` +
           `${parsed.summary.high_impact_files.length} high-impact, ` +
@@ -636,26 +586,18 @@ export class GeminiProvider implements IAiProvider {
       );
       return parsed;
     } catch {
-      throw new Error(
-        `auditInfra: Gemini returned non-JSON: ${responseText.slice(0, 200)}`,
-      );
+      throw new Error(`auditInfra: Gemini returned non-JSON: ${responseText.slice(0, 200)}`);
     }
   }
 
   // ── IAiProvider.deepReview (Call 2 — Smart File Scoring) ─────────────────
 
-  /**
-   * Deep reviews only the high-weight files selected by auditInfra.
-   * Receives their source + direct imports + paired templates.
-   * Boilerplate files must be excluded by the caller before this call.
-   *
-   * Temperature 0.1 — near-deterministic but allows some reasoning flexibility.
-   */
   async deepReview(request: DeepReviewRequest): Promise<DeepReviewResult> {
+    const model = GeminiModel.FLASH;
     const userPrompt = this.buildDeepReviewUserPrompt(request);
 
     const requestBody = {
-      model: GeminiModel.FLASH,
+      model,
       project: this.cloudProject,
       request: {
         systemInstruction: {
@@ -673,30 +615,27 @@ export class GeminiProvider implements IAiProvider {
 
     const estimatedTokens = Math.ceil(userPrompt.length / 4);
     this.logDebug(
-      `deepReview: ~${estimatedTokens} tokens, ` +
-        `files=${Object.keys(request.fileContents).length}, model=${GeminiModel.FLASH}`,
+      `deepReview: ~${estimatedTokens} tokens, files=${Object.keys(request.fileContents).length}, model=${model}`,
     );
 
-    const json = await codeAssistPost(
-      "generateContent",
-      requestBody,
-      this.accessToken,
-      this.logDebug,
-    );
+    const start = performance.now();
+    const json = await codeAssistPost("generateContent", requestBody, this.accessToken, this.logDebug);
+    const durationMs = Math.round(performance.now() - start);
 
     const responseText = extractResponseText(json);
 
     try {
       const parsed = JSON.parse(responseText) as DeepReviewResult;
+
+      this.callLogger.persist("deepReview", model, requestBody, parsed, durationMs, estimatedTokens);
+
       this.logDebug(
         `deepReview: ${parsed.reviewed_files.length} files reviewed, ` +
           `${parsed.repo_level_findings.length} repo-level findings.`,
       );
       return parsed;
     } catch {
-      throw new Error(
-        `deepReview: Gemini returned non-JSON: ${responseText.slice(0, 200)}`,
-      );
+      throw new Error(`deepReview: Gemini returned non-JSON: ${responseText.slice(0, 200)}`);
     }
   }
 
@@ -710,77 +649,45 @@ export class GeminiProvider implements IAiProvider {
     projectTree: string,
   ): string {
     const sections: string[] = [];
-
-    sections.push(
-      `## PROJECT TREE (Structure Context)\n\`\`\`\n${projectTree}\n\`\`\``,
-    );
-
+    sections.push(`## PROJECT TREE (Structure Context)\n\`\`\`\n${projectTree}\n\`\`\``);
     for (const [name, content] of Object.entries(iacFiles)) {
       sections.push(`## IaC File: ${name}\n\`\`\`\n${content}\n\`\`\``);
     }
-
     for (const [name, content] of Object.entries(dependencyManifests)) {
-      sections.push(
-        `## Dependency Manifest: ${name}\n\`\`\`\n${content}\n\`\`\``,
-      );
+      sections.push(`## Dependency Manifest: ${name}\n\`\`\`\n${content}\n\`\`\``);
     }
-
     return sections.join("\n\n");
   }
 
-  /**
-   * Assembles the Call 1 user prompt:
-   * - package.json
-   * - infra files (CI/CD, Docker, build configs, IaC, env)
-   * - full file tree as a JSON manifest (path + extension + bytes + lines per entry)
-   */
   private buildInfraAuditUserPrompt(request: InfraAuditRequest): string {
     const sections: string[] = [];
-
-    sections.push(
-      `## package.json\n\`\`\`json\n${request.packageJson}\n\`\`\``,
-    );
-
+    sections.push(`## package.json\n\`\`\`json\n${request.packageJson}\n\`\`\``);
     for (const [name, content] of Object.entries(request.infraFiles)) {
       sections.push(`## Infra File: ${name}\n\`\`\`\n${content}\n\`\`\``);
     }
-
     const treeManifest = request.fileTree
       .map(
         (f) =>
           `{ "path": "${f.path}", "extension": "${f.extension}", "bytes": ${f.bytes}, "lines": ${f.lines} }`,
       )
       .join("\n");
-
     sections.push(
       `## Full Project File Tree (${request.fileTree.length} files)\n\`\`\`json\n[\n${treeManifest}\n]\n\`\`\``,
     );
-
     return sections.join("\n\n");
   }
 
-  /**
-   * Assembles the Call 2 user prompt:
-   * - High-weight file sources (tagged by path)
-   * - Direct import sources (excluding boilerplate)
-   * - Paired HTML/template files
-   */
   private buildDeepReviewUserPrompt(request: DeepReviewRequest): string {
     const sections: string[] = [];
-
     const fileCount = Object.keys(request.fileContents).length;
     sections.push(
       `## High-Impact Files Under Review (${fileCount} files)\n` +
         `> These files were selected by the infra audit (weight ≥ threshold, ignore_in_deep_review = false).`,
     );
-
     for (const [filePath, content] of Object.entries(request.fileContents)) {
       const ext = filePath.split(".").pop() ?? "";
-      sections.push(
-        `### ${filePath}\n\`\`\`${ext}\n${content}\n\`\`\``,
-      );
+      sections.push(`### ${filePath}\n\`\`\`${ext}\n${content}\n\`\`\``);
     }
-
     if (Object.keys(request.importContents).length > 0) {
       sections.push(
         `## Direct Imports (non-boilerplate)\n` +
@@ -791,19 +698,15 @@ export class GeminiProvider implements IAiProvider {
         sections.push(`### ${filePath}\n\`\`\`${ext}\n${content}\n\`\`\``);
       }
     }
-
     if (Object.keys(request.templateContents).length > 0) {
       sections.push(
         `## Paired Templates / HTML Files\n` +
           `> Angular templates, React JSX siblings, or Vue SFC templates for the reviewed files.`,
       );
-      for (const [filePath, content] of Object.entries(
-        request.templateContents,
-      )) {
+      for (const [filePath, content] of Object.entries(request.templateContents)) {
         sections.push(`### ${filePath}\n\`\`\`html\n${content}\n\`\`\``);
       }
     }
-
     return sections.join("\n\n");
   }
 
@@ -811,11 +714,8 @@ export class GeminiProvider implements IAiProvider {
   // Private: Response parsers
   // ─────────────────────────────────────────────────────────────────────────
 
-  private extractCodeFindings(
-    parsed: Record<string, unknown>,
-  ): ReviewFinding[] {
+  private extractCodeFindings(parsed: Record<string, unknown>): ReviewFinding[] {
     if (!Array.isArray(parsed["codeFindings"])) return [];
-
     return (parsed["codeFindings"] as Record<string, unknown>[])
       .filter((f) => f["file"] && f["snippet"])
       .map((f) => ({
@@ -839,11 +739,8 @@ export class GeminiProvider implements IAiProvider {
       }));
   }
 
-  private extractInfraFindings(
-    parsed: Record<string, unknown>,
-  ): InfraFindingEntity[] {
+  private extractInfraFindings(parsed: Record<string, unknown>): InfraFindingEntity[] {
     if (!Array.isArray(parsed["infraFindings"])) return [];
-
     return (parsed["infraFindings"] as Record<string, unknown>[])
       .filter((f) => f["file"] && f["title"])
       .map((f) => ({
@@ -853,9 +750,7 @@ export class GeminiProvider implements IAiProvider {
         title: String(f["title"] ?? ""),
         description: String(f["description"] ?? ""),
         remediation: String(f["remediation"] ?? ""),
-        severity: (["critical", "high", "medium", "low"].includes(
-          String(f["severity"]),
-        )
+        severity: (["critical", "high", "medium", "low"].includes(String(f["severity"]))
           ? f["severity"]
           : "medium") as InfraFindingEntity["severity"],
       }));
