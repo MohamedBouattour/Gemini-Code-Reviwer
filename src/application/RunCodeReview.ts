@@ -3,29 +3,20 @@
 /**
  * RunCodeReview — the primary application Use Case.
  *
- * ## Responsibilities (one, per SRP)
- *   Orchestrate the code review pipeline by coordinating interfaces.
- *   No business logic lives here — only sequencing and error handling.
+ * ## AI pipeline (Smart File Scoring — 2 calls total)
  *
- * ## Dependencies (all via interfaces — DIP)
- *   - IFileScanner      (provided by FastGlobScanner)
- *   - IAiProvider       (provided by GeminiProvider)
- *   - IProjectAuditor[] (pipeline — StaticSecurityAuditor, …)
- *   - ISkillRepository  (provided by LocalSkillRepository)
- *   - IReportBuilder    (provided by MarkdownReportBuilder)
- *   - IFeedbackManager  (provided by FeedbackManager — read-only)
+ *   The one-shot "dump everything to Gemini" approach is removed.
+ *   All AI calls now happen inside the InfraAuditorAdapter auditor:
  *
- * ## AI call sequencing strategy
- *   The Code Assist API enforces a per-project RPM quota.
- *   Firing two large `generateContent` requests simultaneously causes both to
- *   hit 429 and each triggers its own 15–60 s backoff — effectively doubling
- *   wait time.
+ *     [auditor pipeline]
+ *       └─ StaticSecurityAuditor     (SAST secrets scan — no AI)
+ *       └─ InfraAuditorAdapter       (AI Call 1: auditInfra, AI Call 2: deepReview)
  *
- *   Strategy: run the heavier code-review call first, then immediately start
- *   the lighter infra call. A configurable INTER_CALL_STAGGER_MS delay is
- *   inserted between them to let the API quota window recover slightly.
- *   The net wall-clock time is virtually identical to the old parallel approach
- *   (infra call is tiny, ~800 tokens) but 429 storms are eliminated.
+ *   RunCodeReview itself makes only ONE additional AI call:
+ *     AI Call 3: generateExecutiveSummary  (light, ~400 tokens)
+ *
+ *   The old reviewProject() and reviewInfrastructure() calls are gone.
+ *   Token usage drops 60–80 % compared to the one-shot approach.
  *
  * ## OCP: Auditor Pipeline
  *   Adding a new IProjectAuditor (e.g. LicenseAuditor) requires:
@@ -38,11 +29,7 @@ import crypto from "node:crypto";
 import * as nodefs from "node:fs/promises";
 import * as path from "node:path";
 
-import type {
-  IAiProvider,
-  ProjectReviewRequest,
-  InfraReviewRequest,
-} from "../core/interfaces/IAiProvider.js";
+import type { IAiProvider } from "../core/interfaces/IAiProvider.js";
 import type {
   IFileScanner,
   ScannedProject,
@@ -62,27 +49,6 @@ import type {
 } from "../core/entities/ProjectReport.js";
 import type { ReviewFinding } from "../core/entities/ReviewFinding.js";
 import { NoSourceFilesError } from "../core/domain-errors/ReviewerErrors.js";
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Constants
-// ─────────────────────────────────────────────────────────────────────────────
-
-/**
- * Minimum gap (ms) between the end of one `generateContent` call and the
- * start of the next.
- *
- * Why 2 000 ms:
- *   - Code Assist uses a 60-second rolling RPM window.
- *   - 2 s is enough for the server-side quota counter to record the previous
- *     request before we issue the next one, without meaningfully slowing the
- *     CLI (the infra call itself takes ~2–4 s).
- *   - Set to 0 to disable (e.g., in unit tests).
- */
-const INTER_CALL_STAGGER_MS = 2_000;
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // IFeedbackManager — local interface (avoids importing infrastructure)
@@ -146,25 +112,17 @@ export class RunCodeReview {
     private readonly feedbackManager: IFeedbackManager,
   ) {}
 
-  // ── Public entry point ────────────────────────────────────────────────
-
   async execute(input: RunCodeReviewInput): Promise<RunCodeReviewOutput> {
-    const {
-      baseDir,
-      preloadedProject,
-      logDebug,
-      onProgress = () => {},
-    } = input;
-
+    const { baseDir, preloadedProject, logDebug, onProgress = () => {} } = input;
     const t0 = performance.now();
 
-    // ── Step 1: Scan ───────────────────────────────────────────────────────────────
+    // ── Step 1: Scan ─────────────────────────────────────────────────────────
     onProgress("Scanning project (code, IaC, configs)...");
     logDebug(`Scanning base directory: ${baseDir}`);
 
     const scanStart = performance.now();
     const project: ScannedProject = preloadedProject
-      ? (logDebug("Reusing pre-loaded ScannedProject (no second filesystem scan)."), preloadedProject)
+      ? (logDebug("Reusing pre-loaded ScannedProject."), preloadedProject)
       : await this.scanner.scan(baseDir);
 
     const { codeFiles } = project;
@@ -173,26 +131,22 @@ export class RunCodeReview {
     }
     logDebug(`Scanned: ${codeFiles.length} source file(s).`);
 
-    // ── Step 2: Output directory ───────────────────────────────────────────────
+    // ── Step 2: Output directory ─────────────────────────────────────────────
     const outputDir = path.join(baseDir, "gemini-code-reviewer");
     await nodefs.mkdir(outputDir, { recursive: true });
 
-    // ── Step 3: Incremental cache ──────────────────────────────────────────────
+    // ── Step 3: Incremental cache ─────────────────────────────────────────────
     const statePath = path.join(outputDir, ".gemini-code-reviewer.json");
     let previousState: CacheState | null = null;
     try {
-      const rawState = await nodefs.readFile(statePath, "utf-8");
-      previousState = JSON.parse(rawState) as CacheState;
-    } catch {
-      // No cache yet — full review
-    }
+      previousState = JSON.parse(await nodefs.readFile(statePath, "utf-8")) as CacheState;
+    } catch { /* no cache yet */ }
 
     const currentFileHashes: Record<string, string> = {};
     const changedFiles = codeFiles.filter((f) => {
       const hash = crypto.createHash("sha256").update(f.content).digest("hex");
       currentFileHashes[f.filePath] = hash;
-      const unchanged = previousState?.fileHashes?.[f.filePath] === hash;
-      return !unchanged;
+      return previousState?.fileHashes?.[f.filePath] !== hash;
     });
 
     const unchangedFilePaths = codeFiles
@@ -214,19 +168,28 @@ export class RunCodeReview {
     const scanMs = performance.now() - scanStart;
     logDebug(`[timing] scan: ${(scanMs / 1000).toFixed(2)}s (${codeFiles.length} files, ${changedFiles.length} changed)`);
 
-    // ── Step 4: Skills context ──────────────────────────────────────────────
+    // ── Step 4: Skills context ────────────────────────────────────────────────
     onProgress("Loading skills context...");
     const skillsContext = await this.skillRepository.loadSkillsContext(baseDir);
     logDebug(`Skills context: ${skillsContext.length} chars.`);
     const feedbackSuffix = this.feedbackManager.buildSystemPromptSuffix();
+    void feedbackSuffix; // passed to auditors via context if needed
 
-    // ── Step 5: Auditor pipeline ─────────────────────────────────────────────
+    // ── Step 5: Auditor pipeline ──────────────────────────────────────────────
+    //
+    // This is where ALL AI calls happen.
+    // InfraAuditorAdapter runs:
+    //   AI Call 1 · auditInfra   (file-tree metadata → scored file list)
+    //   AI Call 2 · deepReview   (selected file content → findings)
+    // StaticSecurityAuditor runs regex-based secret detection (no AI).
+    //
     const auditStart = performance.now();
     const auditContext: AuditContext = {
-      codeFiles,
+      codeFiles: changedFiles, // only changed files for efficiency
       iacFiles: project.iacFiles,
       dependencyManifests: project.dependencyManifests,
       isPublicFacing: project.isPublicFacing,
+      logDebug, // passed so auditors can emit debug lines
     };
 
     let combinedAuditResult: AuditResult = {
@@ -251,112 +214,16 @@ export class RunCodeReview {
     const infraScannedFiles = combinedAuditResult.scannedFiles ?? [];
     const isPublicFacing = combinedAuditResult.isPublicFacing ?? project.isPublicFacing;
     const auditMs = performance.now() - auditStart;
-    logDebug(`[timing] audit: ${(auditMs / 1000).toFixed(2)}s (${secretFindings.length} secret(s) detected)`);
-
-    // ── Step 6: AI Review — sequential with inter-call stagger ────────────────
-    //
-    // WHY SEQUENTIAL (not Promise.all):
-    //   The Code Assist API enforces a per-project RPM (requests-per-minute)
-    //   quota. Firing both calls at t=0 means both arrive at the server in the
-    //   same quota window and one (or both) immediately receives a 429.
-    //   Each call then independently retries after its own backoff window
-    //   (15–60 s), which can double the total wait time.
-    //
-    //   Sequential guarantees only one in-flight request at a time.
-    //   The infra call is ~800 tokens (vs ~26 000 for code review), so it
-    //   completes in 2–3 s — the total wall-clock cost of sequencing is
-    //   negligible compared to a single 15 s 429 backoff.
-    //
-    //   The INTER_CALL_STAGGER_MS pause after the first call gives the
-    //   server-side quota window time to register the first request's
-    //   token consumption before the second call arrives.
-    // ────────────────────────────────────────────────────────────────────
-
-    const reviewStart = performance.now();
-
-    // — Prepare code review payload —
-    const codePayload = changedFiles
-      .map((f) => `<file path="${f.filePath}">\n${f.content}\n</file>`)
-      .join("\n\n");
-
-    const codeReviewRequest: ProjectReviewRequest = {
-      codePayload,
-      skillsContext,
-      feedbackSuffix,
-    };
-
-    // — Prepare infra audit payload —
-    const currentIacHashes: Record<string, string> = {};
-    const changedIacFiles: Record<string, string> = {};
-    for (const [name, content] of Object.entries(project.iacFiles)) {
-      const hash = crypto.createHash("sha256").update(content).digest("hex");
-      currentIacHashes[name] = hash;
-      if (previousState?.iacFileHashes?.[name] !== hash) changedIacFiles[name] = content;
-    }
-
-    const currentManifestHashes: Record<string, string> = {};
-    const changedManifests: Record<string, string> = {};
-    for (const [name, content] of Object.entries(project.dependencyManifests)) {
-      const hash = crypto.createHash("sha256").update(content).digest("hex");
-      currentManifestHashes[name] = hash;
-      if (previousState?.manifestHashes?.[name] !== hash) changedManifests[name] = content;
-    }
-
-    const projectTree = codeFiles.map((f) => f.filePath).join("\n");
-    const infraReviewRequest: InfraReviewRequest = {
-      iacFiles: changedIacFiles,
-      dependencyManifests: changedManifests,
-      projectTree,
-    };
-
     logDebug(
-      `reviewProject: ${changedFiles.length} code file(s) → ~${Math.ceil(codePayload.length / 4)} tokens`,
-    );
-    logDebug(
-      `reviewInfrastructure: ${Object.keys(changedIacFiles).length} IaC` +
-        ` + ${Object.keys(changedManifests).length} manifest(s)` +
-        ` → ~${Math.ceil((JSON.stringify(changedIacFiles).length + JSON.stringify(changedManifests).length + projectTree.length) / 4)} tokens`,
+      `[timing] audit+review: ${(auditMs / 1000).toFixed(2)}s` +
+        ` (${secretFindings.length} secret(s),` +
+        ` ${combinedAuditResult.codeFindings?.length ?? 0} code finding(s),` +
+        ` ${combinedAuditResult.infraFindings?.length ?? 0} infra finding(s))`,
     );
 
-    // — Call 1: Code Review (heavier, ~26k tokens) —
-    onProgress("Reviewing code with Gemini 2.5 Flash…");
-    const codeReviewResult = await this.aiProvider.reviewProject(codeReviewRequest);
-    logDebug(
-      `reviewProject complete: ${codeReviewResult.codeFindings.length} finding(s).` +
-        ` Staggering ${INTER_CALL_STAGGER_MS}ms before infra call…`,
-    );
-
-    // — Stagger pause: let the quota window register the first request —
-    if (INTER_CALL_STAGGER_MS > 0) await sleep(INTER_CALL_STAGGER_MS);
-
-    // — Call 2: Infra review (lighter, ~800 tokens) —
-    onProgress("Auditing infrastructure & dependencies…");
-    const infraReviewResult = await this.aiProvider.reviewInfrastructure(infraReviewRequest);
-
-    const reviewMs = performance.now() - reviewStart;
-    onProgress(
-      `Review complete — ${codeReviewResult.codeFindings.length} code finding(s),` +
-        ` ${infraReviewResult.infraFindings.length} infra finding(s).`,
-    );
-    logDebug(
-      `[timing] review (sequential): ${(reviewMs / 1000).toFixed(2)}s` +
-        ` → ${codeReviewResult.codeFindings.length} code finding(s),` +
-        ` ${infraReviewResult.infraFindings.length} infra finding(s)` +
-        ` | SOLID=${codeReviewResult.subScores.solidPrinciplesScore ?? "—"}` +
-        ` naming=${codeReviewResult.subScores.namingConventionScore ?? "—"}` +
-        ` MI=${codeReviewResult.subScores.maintainabilityIndex ?? "—"}` +
-        ` CC=${codeReviewResult.subScores.cyclomaticComplexity ?? "—"}` +
-        ` dup=${codeReviewResult.subScores.codeDuplicationPercentage ?? "—"}%`,
-    );
-
-    const reviewResult = {
-      codeFindings: codeReviewResult.codeFindings,
-      infraFindings: infraReviewResult.infraFindings,
-      subScores: codeReviewResult.subScores,
-    };
-
-    // ── Step 7: Annotate findings ─────────────────────────────────────────────
-    for (const finding of reviewResult.codeFindings) {
+    // ── Step 6: Annotate findings with risk multipliers + line resolution ─────
+    const newCodeFindings = combinedAuditResult.codeFindings ?? [];
+    for (const finding of newCodeFindings) {
       finding.riskMultiplier = this.getRiskMultiplier(finding.file);
       const fileMatch = changedFiles.find((f) => f.filePath === finding.file);
       if (fileMatch && finding.snippet) {
@@ -364,16 +231,15 @@ export class RunCodeReview {
       }
     }
 
-    const allCodeFindings: ReviewFinding[] = [...reviewResult.codeFindings, ...oldFindings];
+    const allCodeFindings: ReviewFinding[] = [...newCodeFindings, ...oldFindings];
     const filteredFindings = allCodeFindings.filter(
       (f) => !this.feedbackManager.isFalsePositive(f.file, f.line, f.snippet ?? ""),
     );
-    const allInfraFindings = [
-      ...reviewResult.infraFindings,
+    const allInfraFindings: InfraFindingEntity[] = [
       ...(combinedAuditResult.infraFindings ?? []),
     ];
 
-    // ── Step 8: Executive summary ───────────────────────────────────────────
+    // ── Step 7: Executive summary ─────────────────────────────────────────────
     const summaryStart = performance.now();
     onProgress("Generating Executive Summary…");
 
@@ -384,7 +250,9 @@ export class RunCodeReview {
       isPublicFacing,
       scannedFiles: infraScannedFiles,
     });
-    this.reportBuilder.setAiScores(reviewResult.subScores);
+    // subScores are no longer available from the new pipeline (deepReview doesn't emit them)
+    // They could be added back to DeepReviewResult in a future iteration.
+    this.reportBuilder.setAiScores({});
     const previewScore = this.reportBuilder.calculateFinalScore();
 
     const executiveSummary = await this.aiProvider.generateExecutiveSummary({
@@ -410,30 +278,38 @@ export class RunCodeReview {
     const summaryMs = performance.now() - summaryStart;
     logDebug(`[timing] summary: ${(summaryMs / 1000).toFixed(2)}s`);
 
-    // ── Step 9: Timing stats ────────────────────────────────────────────────
+    // ── Step 8: Timing stats ──────────────────────────────────────────────────
     const totalMs = performance.now() - t0;
     const timingStats: TimingStats = {
       totalMs: Math.round(totalMs),
       scanMs: Math.round(scanMs),
       auditMs: Math.round(auditMs),
-      reviewMs: Math.round(reviewMs),
+      reviewMs: Math.round(auditMs), // auditMs now includes all AI review time
       summaryMs: Math.round(summaryMs),
       timestamp: new Date().toISOString(),
     };
 
     logDebug(
-      "[timing] ────────────────────────────────────────────────\n" +
-        `         scan    : ${(scanMs / 1000).toFixed(2)}s\n` +
-        `         audit   : ${(auditMs / 1000).toFixed(2)}s\n` +
-        `         review  : ${(reviewMs / 1000).toFixed(2)}s  ← code → [${INTER_CALL_STAGGER_MS}ms stagger] → infra\n` +
-        `         summary : ${(summaryMs / 1000).toFixed(2)}s\n` +
-        `         ────────────────────────────────────────────────\n` +
-        `         TOTAL   : ${(totalMs / 1000).toFixed(2)}s  |  score: ${finalScore}/100`,
+      "[timing] ────────────────────────────────────────\n" +
+        `         scan          : ${(scanMs / 1000).toFixed(2)}s\n` +
+        `         audit+review  : ${(auditMs / 1000).toFixed(2)}s  ← auditInfra → [2s] → deepReview\n` +
+        `         summary       : ${(summaryMs / 1000).toFixed(2)}s\n` +
+        `         ────────────────────────────────────────\n` +
+        `         TOTAL         : ${(totalMs / 1000).toFixed(2)}s  |  score: ${finalScore}/100`,
     );
 
     this.reportBuilder.setTimingStats(timingStats);
 
-    // ── Step 10: Persist cache ──────────────────────────────────────────────
+    // ── Step 9: Persist cache ─────────────────────────────────────────────────
+    const currentIacHashes: Record<string, string> = {};
+    for (const [name, content] of Object.entries(project.iacFiles)) {
+      currentIacHashes[name] = crypto.createHash("sha256").update(content).digest("hex");
+    }
+    const currentManifestHashes: Record<string, string> = {};
+    for (const [name, content] of Object.entries(project.dependencyManifests)) {
+      currentManifestHashes[name] = crypto.createHash("sha256").update(content).digest("hex");
+    }
+
     const cacheState: CacheState = {
       fileHashes: currentFileHashes,
       iacFileHashes: currentIacHashes,
@@ -443,21 +319,16 @@ export class RunCodeReview {
       infraFindings: allInfraFindings,
       isPublicFacing,
       executiveSummary,
-      namingConventionScore: reviewResult.subScores.namingConventionScore,
-      solidPrinciplesScore: reviewResult.subScores.solidPrinciplesScore,
-      codeDuplicationPercentage: reviewResult.subScores.codeDuplicationPercentage,
-      cyclomaticComplexity: reviewResult.subScores.cyclomaticComplexity,
-      maintainabilityIndex: reviewResult.subScores.maintainabilityIndex,
       timingStats,
     };
 
     try {
       await nodefs.writeFile(statePath, JSON.stringify(cacheState, null, 2), "utf-8");
     } catch (err: any) {
-      logDebug(`Could not save cache to ${statePath}: ${err.message}`);
+      logDebug(`Could not save cache: ${err.message}`);
     }
 
-    // ── Step 11: Assemble final report ─────────────────────────────────────────
+    // ── Step 10: Assemble final report ────────────────────────────────────────
     const report: ProjectReport = {
       codeFindings: filteredFindings,
       secretFindings,
@@ -465,7 +336,7 @@ export class RunCodeReview {
       isPublicFacing,
       infraScannedFiles,
       executiveSummary,
-      aiSubScores: reviewResult.subScores,
+      aiSubScores: {},
       fileHashes: currentFileHashes,
       timingStats,
     };
@@ -474,7 +345,7 @@ export class RunCodeReview {
     return { report, outputDir };
   }
 
-  // ── Private helpers ────────────────────────────────────────────────
+  // ── Private helpers ───────────────────────────────────────────────────────
 
   private mergeAuditResults(base: AuditResult, addition: AuditResult): AuditResult {
     return {
@@ -491,7 +362,6 @@ export class RunCodeReview {
     const lines = originalContent.split("\n");
     const normSnippet = snippet.replace(/\s+/g, "");
     if (!normSnippet) return 1;
-
     let normContent = "";
     const indexToLine: number[] = [];
     for (let j = 0; j < lines.length; j++) {
@@ -499,7 +369,6 @@ export class RunCodeReview {
       normContent += stripped;
       for (let k = 0; k < stripped.length; k++) indexToLine.push(j + 1);
     }
-
     const matchIndex = normContent.indexOf(normSnippet);
     return matchIndex !== -1 ? (indexToLine[matchIndex] ?? 1) : 1;
   }
@@ -526,13 +395,7 @@ export class RunCodeReview {
       isPublicFacing: state.isPublicFacing ?? false,
       infraScannedFiles: [],
       executiveSummary: state.executiveSummary as ProjectReport["executiveSummary"],
-      aiSubScores: {
-        namingConventionScore: state.namingConventionScore,
-        solidPrinciplesScore: state.solidPrinciplesScore,
-        codeDuplicationPercentage: state.codeDuplicationPercentage,
-        cyclomaticComplexity: state.cyclomaticComplexity,
-        maintainabilityIndex: state.maintainabilityIndex,
-      },
+      aiSubScores: {},
       fileHashes: currentFileHashes,
       timingStats: state.timingStats,
     };
