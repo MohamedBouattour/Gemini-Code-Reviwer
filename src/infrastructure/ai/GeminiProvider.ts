@@ -25,6 +25,13 @@ import type {
   InfraReviewRequest,
   InfraReviewResult,
   ExecutiveSummaryInput,
+  InfraAuditRequest,
+  InfraAuditResult,
+  ScoredFile,
+  DeepReviewRequest,
+  DeepReviewResult,
+  DeepReviewedFile,
+  RepoLevelFinding,
 } from "../../core/interfaces/IAiProvider.js";
 import type {
   ExecutiveSummary,
@@ -37,6 +44,8 @@ import {
   INFRA_REVIEW_SYSTEM_PROMPT,
   EXECUTIVE_SUMMARY_PROMPT,
   GENERATE_SKILLS_SYSTEM_PROMPT,
+  INFRA_AUDIT_SYSTEM_PROMPT,
+  DEEP_REVIEW_SYSTEM_PROMPT,
 } from "./prompts.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -120,7 +129,6 @@ const INFRA_FINDING_SCHEMA = {
 const CODE_REVIEW_SCHEMA = {
   type: "OBJECT",
   properties: {
-    // ─── Code quality sub-scores ─────────────────────────────────────────
     score: {
       type: "NUMBER",
       description: "Overall code quality score 0–100.",
@@ -145,7 +153,6 @@ const CODE_REVIEW_SCHEMA = {
       type: "NUMBER",
       description: "Estimated % of duplicated code blocks.",
     },
-    // ─── Findings ────────────────────────────────────────────────────────
     codeFindings: {
       type: "ARRAY",
       description: "Code quality, security, and architectural findings.",
@@ -206,6 +213,100 @@ const SKILLS_SCHEMA = {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Smart File Scoring schemas
+// ─────────────────────────────────────────────────────────────────────────────
+
+const SCORED_FILE_SCHEMA = {
+  type: "OBJECT",
+  properties: {
+    path: { type: "STRING" },
+    extension: { type: "STRING" },
+    lines: { type: "NUMBER" },
+    bytes: { type: "NUMBER" },
+    weight: { type: "NUMBER", description: "Impact weight 0–100." },
+    reason: { type: "STRING" },
+    ignore_in_deep_review: { type: "BOOLEAN" },
+  },
+  required: ["path", "extension", "lines", "bytes", "weight", "reason", "ignore_in_deep_review"],
+};
+
+const INFRA_AUDIT_SCHEMA = {
+  type: "OBJECT",
+  properties: {
+    files: {
+      type: "ARRAY",
+      description: "All files sorted by weight descending.",
+      items: SCORED_FILE_SCHEMA,
+    },
+    summary: {
+      type: "OBJECT",
+      properties: {
+        total_files: { type: "NUMBER" },
+        total_lines: { type: "NUMBER" },
+        high_impact_files: { type: "ARRAY", items: { type: "STRING" } },
+        ignored_patterns_detected: { type: "ARRAY", items: { type: "STRING" } },
+      },
+      required: ["total_files", "total_lines", "high_impact_files", "ignored_patterns_detected"],
+    },
+  },
+  required: ["files", "summary"],
+};
+
+const DEEP_REVIEW_ISSUE_SCHEMA = {
+  type: "OBJECT",
+  properties: {
+    severity: { type: "STRING", enum: ["HIGH", "MEDIUM", "LOW"] },
+    type: {
+      type: "STRING",
+      enum: ["SECURITY", "RELIABILITY", "MAINTAINABILITY", "PERFORMANCE", "CONFIG"],
+    },
+    description: { type: "STRING" },
+    evidence: { type: "STRING" },
+    suggested_fix: { type: "STRING" },
+  },
+  required: ["severity", "type", "description", "evidence", "suggested_fix"],
+};
+
+const DEEP_REVIEWED_FILE_SCHEMA = {
+  type: "OBJECT",
+  properties: {
+    path: { type: "STRING" },
+    overall_assessment: { type: "STRING" },
+    complexity_score: { type: "NUMBER" },
+    issues: { type: "ARRAY", items: DEEP_REVIEW_ISSUE_SCHEMA },
+  },
+  required: ["path", "overall_assessment", "complexity_score", "issues"],
+};
+
+const REPO_LEVEL_FINDING_SCHEMA = {
+  type: "OBJECT",
+  properties: {
+    rank: { type: "NUMBER" },
+    title: { type: "STRING" },
+    detail: { type: "STRING" },
+    recommended_action: { type: "STRING" },
+  },
+  required: ["rank", "title", "detail", "recommended_action"],
+};
+
+const DEEP_REVIEW_SCHEMA = {
+  type: "OBJECT",
+  properties: {
+    reviewed_files: {
+      type: "ARRAY",
+      description: "Per-file results, sorted by severity (HIGH issues first).",
+      items: DEEP_REVIEWED_FILE_SCHEMA,
+    },
+    repo_level_findings: {
+      type: "ARRAY",
+      description: "Top 5–10 cross-cutting repo-level concerns.",
+      items: REPO_LEVEL_FINDING_SCHEMA,
+    },
+  },
+  required: ["reviewed_files", "repo_level_findings"],
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Response shape (minimal typed wrapper to avoid `any` everywhere)
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -226,9 +327,7 @@ const DEFAULT_BACKOFF_SECONDS = [15, 30, 60];
 
 /**
  * POST to a Code Assist method (e.g. `generateContent`, `loadCodeAssist`).
- * Automatically retries on 429 (rate limit) responses, waiting for the
- * server-suggested cooldown period before each retry.
- * Throws on non-2xx responses after retries are exhausted.
+ * Automatically retries on 429 (rate limit) responses.
  */
 async function codeAssistPost(
   method: string,
@@ -266,7 +365,6 @@ async function codeAssistPost(
       `[timing:http] ${method} → HTTP ${res.status} in ${httpMs.toFixed(0)}ms (error)`,
     );
 
-    // Retry on 429 rate-limit errors
     if (res.status === 429 && attempt < MAX_RETRIES) {
       const match = errText.match(/reset after (\d+)s/);
       const waitSeconds = match
@@ -290,11 +388,6 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/**
- * Extract the text from the first candidate of a Code Assist generateContent
- * response. Returns `"{}"` (safe default for JSON.parse callers) when the
- * shape is unexpected.
- */
 function extractResponseText(json: ApiResponse): string {
   return json?.response?.candidates?.[0]?.content?.parts?.[0]?.text ?? "{}";
 }
@@ -312,12 +405,6 @@ export class GeminiProvider implements IAiProvider {
 
   // ── IAiProvider.reviewProject ─────────────────────────────────────────────
 
-  /**
-   * Code review focussed on quality, architecture, and security.
-   *
-   * Model: Gemini 2.5 Flash (large context window, fast, structured output).
-   * Temperature: 0.1 (deterministic, analytical output).
-   */
   async reviewProject(
     request: ProjectReviewRequest,
   ): Promise<ProjectReviewResult> {
@@ -365,10 +452,6 @@ export class GeminiProvider implements IAiProvider {
 
   // ── IAiProvider.reviewInfrastructure ──────────────────────────────────────
 
-  /**
-   * Infrastructure and SCA audit call.
-   * Only includes IaC files, manifests, and the project tree.
-   */
   async reviewInfrastructure(
     request: InfraReviewRequest,
   ): Promise<InfraReviewResult> {
@@ -501,14 +584,126 @@ export class GeminiProvider implements IAiProvider {
     }
   }
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // Private: Prompt builder
-  // ─────────────────────────────────────────────────────────────────────────
+  // ── IAiProvider.auditInfra (Call 1 — Smart File Scoring) ─────────────────
 
   /**
-   * Assembles the user-turn prompt for the infrastructure audit call.
-   * Combines IaC files, dependency manifests, and the project tree.
+   * Sends the full file tree + infra files + package.json to Gemini.
+   * Returns a weight score (0–100) for every file plus boilerplate flags.
+   *
+   * Temperature 0.0 — fully deterministic, identical input must yield
+   * identical weights across runs.
    */
+  async auditInfra(request: InfraAuditRequest): Promise<InfraAuditResult> {
+    const userPrompt = this.buildInfraAuditUserPrompt(request);
+
+    const requestBody = {
+      model: GeminiModel.FLASH,
+      project: this.cloudProject,
+      request: {
+        systemInstruction: {
+          role: "system",
+          parts: [{ text: INFRA_AUDIT_SYSTEM_PROMPT }],
+        },
+        contents: [{ role: "user", parts: [{ text: userPrompt }] }],
+        generationConfig: {
+          temperature: 0.0,
+          responseMimeType: "application/json",
+          responseSchema: INFRA_AUDIT_SCHEMA,
+        },
+      },
+    };
+
+    const estimatedTokens = Math.ceil(userPrompt.length / 4);
+    this.logDebug(
+      `auditInfra: ~${estimatedTokens} tokens, files=${request.fileTree.length}, model=${GeminiModel.FLASH}`,
+    );
+
+    const json = await codeAssistPost(
+      "generateContent",
+      requestBody,
+      this.accessToken,
+      this.logDebug,
+    );
+
+    const responseText = extractResponseText(json);
+
+    try {
+      const parsed = JSON.parse(responseText) as InfraAuditResult;
+      this.logDebug(
+        `auditInfra: ${parsed.files.length} files scored, ` +
+          `${parsed.summary.high_impact_files.length} high-impact, ` +
+          `${parsed.files.filter((f) => f.ignore_in_deep_review).length} ignored.`,
+      );
+      return parsed;
+    } catch {
+      throw new Error(
+        `auditInfra: Gemini returned non-JSON: ${responseText.slice(0, 200)}`,
+      );
+    }
+  }
+
+  // ── IAiProvider.deepReview (Call 2 — Smart File Scoring) ─────────────────
+
+  /**
+   * Deep reviews only the high-weight files selected by auditInfra.
+   * Receives their source + direct imports + paired templates.
+   * Boilerplate files must be excluded by the caller before this call.
+   *
+   * Temperature 0.1 — near-deterministic but allows some reasoning flexibility.
+   */
+  async deepReview(request: DeepReviewRequest): Promise<DeepReviewResult> {
+    const userPrompt = this.buildDeepReviewUserPrompt(request);
+
+    const requestBody = {
+      model: GeminiModel.FLASH,
+      project: this.cloudProject,
+      request: {
+        systemInstruction: {
+          role: "system",
+          parts: [{ text: DEEP_REVIEW_SYSTEM_PROMPT }],
+        },
+        contents: [{ role: "user", parts: [{ text: userPrompt }] }],
+        generationConfig: {
+          temperature: 0.1,
+          responseMimeType: "application/json",
+          responseSchema: DEEP_REVIEW_SCHEMA,
+        },
+      },
+    };
+
+    const estimatedTokens = Math.ceil(userPrompt.length / 4);
+    this.logDebug(
+      `deepReview: ~${estimatedTokens} tokens, ` +
+        `files=${Object.keys(request.fileContents).length}, model=${GeminiModel.FLASH}`,
+    );
+
+    const json = await codeAssistPost(
+      "generateContent",
+      requestBody,
+      this.accessToken,
+      this.logDebug,
+    );
+
+    const responseText = extractResponseText(json);
+
+    try {
+      const parsed = JSON.parse(responseText) as DeepReviewResult;
+      this.logDebug(
+        `deepReview: ${parsed.reviewed_files.length} files reviewed, ` +
+          `${parsed.repo_level_findings.length} repo-level findings.`,
+      );
+      return parsed;
+    } catch {
+      throw new Error(
+        `deepReview: Gemini returned non-JSON: ${responseText.slice(0, 200)}`,
+      );
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Private: Prompt builders
+  // ─────────────────────────────────────────────────────────────────────────
+
   private buildInfraUserPrompt(
     iacFiles: Record<string, string>,
     dependencyManifests: Record<string, string>,
@@ -528,6 +723,85 @@ export class GeminiProvider implements IAiProvider {
       sections.push(
         `## Dependency Manifest: ${name}\n\`\`\`\n${content}\n\`\`\``,
       );
+    }
+
+    return sections.join("\n\n");
+  }
+
+  /**
+   * Assembles the Call 1 user prompt:
+   * - package.json
+   * - infra files (CI/CD, Docker, build configs, IaC, env)
+   * - full file tree as a JSON manifest (path + extension + bytes + lines per entry)
+   */
+  private buildInfraAuditUserPrompt(request: InfraAuditRequest): string {
+    const sections: string[] = [];
+
+    sections.push(
+      `## package.json\n\`\`\`json\n${request.packageJson}\n\`\`\``,
+    );
+
+    for (const [name, content] of Object.entries(request.infraFiles)) {
+      sections.push(`## Infra File: ${name}\n\`\`\`\n${content}\n\`\`\``);
+    }
+
+    const treeManifest = request.fileTree
+      .map(
+        (f) =>
+          `{ "path": "${f.path}", "extension": "${f.extension}", "bytes": ${f.bytes}, "lines": ${f.lines} }`,
+      )
+      .join("\n");
+
+    sections.push(
+      `## Full Project File Tree (${request.fileTree.length} files)\n\`\`\`json\n[\n${treeManifest}\n]\n\`\`\``,
+    );
+
+    return sections.join("\n\n");
+  }
+
+  /**
+   * Assembles the Call 2 user prompt:
+   * - High-weight file sources (tagged by path)
+   * - Direct import sources (excluding boilerplate)
+   * - Paired HTML/template files
+   */
+  private buildDeepReviewUserPrompt(request: DeepReviewRequest): string {
+    const sections: string[] = [];
+
+    const fileCount = Object.keys(request.fileContents).length;
+    sections.push(
+      `## High-Impact Files Under Review (${fileCount} files)\n` +
+        `> These files were selected by the infra audit (weight ≥ threshold, ignore_in_deep_review = false).`,
+    );
+
+    for (const [filePath, content] of Object.entries(request.fileContents)) {
+      const ext = filePath.split(".").pop() ?? "";
+      sections.push(
+        `### ${filePath}\n\`\`\`${ext}\n${content}\n\`\`\``,
+      );
+    }
+
+    if (Object.keys(request.importContents).length > 0) {
+      sections.push(
+        `## Direct Imports (non-boilerplate)\n` +
+          `> Included for context. Do NOT flag issues in these files unless they directly cause a problem in the reviewed files above.`,
+      );
+      for (const [filePath, content] of Object.entries(request.importContents)) {
+        const ext = filePath.split(".").pop() ?? "";
+        sections.push(`### ${filePath}\n\`\`\`${ext}\n${content}\n\`\`\``);
+      }
+    }
+
+    if (Object.keys(request.templateContents).length > 0) {
+      sections.push(
+        `## Paired Templates / HTML Files\n` +
+          `> Angular templates, React JSX siblings, or Vue SFC templates for the reviewed files.`,
+      );
+      for (const [filePath, content] of Object.entries(
+        request.templateContents,
+      )) {
+        sections.push(`### ${filePath}\n\`\`\`html\n${content}\n\`\`\``);
+      }
     }
 
     return sections.join("\n\n");
