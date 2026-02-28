@@ -15,10 +15,17 @@
  *   - IReportBuilder    (provided by MarkdownReportBuilder)
  *   - IFeedbackManager  (provided by FeedbackManager — read-only)
  *
- * ## Single-call AI design
- *   ONE request to Gemini 2.5 Flash with the full code + IaC + manifest
- *   payload returns all findings, infra issues, and sub-scores together.
- *   No chunking, no triage pass, no sequential iteration.
+ * ## AI call sequencing strategy
+ *   The Code Assist API enforces a per-project RPM quota.
+ *   Firing two large `generateContent` requests simultaneously causes both to
+ *   hit 429 and each triggers its own 15–60 s backoff — effectively doubling
+ *   wait time.
+ *
+ *   Strategy: run the heavier code-review call first, then immediately start
+ *   the lighter infra call. A configurable INTER_CALL_STAGGER_MS delay is
+ *   inserted between them to let the API quota window recover slightly.
+ *   The net wall-clock time is virtually identical to the old parallel approach
+ *   (infra call is tiny, ~800 tokens) but 429 storms are eliminated.
  *
  * ## OCP: Auditor Pipeline
  *   Adding a new IProjectAuditor (e.g. LicenseAuditor) requires:
@@ -57,14 +64,30 @@ import type { ReviewFinding } from "../core/entities/ReviewFinding.js";
 import { NoSourceFilesError } from "../core/domain-errors/ReviewerErrors.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// IFeedbackManager — local interface (avoids importing infrastructure)
+// Constants
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Read-only view of the false-positive suppression list.
- * The full FeedbackManager class lives in infrastructure; this port lets
- * RunCodeReview stay decoupled from filesystem I/O.
+ * Minimum gap (ms) between the end of one `generateContent` call and the
+ * start of the next.
+ *
+ * Why 2 000 ms:
+ *   - Code Assist uses a 60-second rolling RPM window.
+ *   - 2 s is enough for the server-side quota counter to record the previous
+ *     request before we issue the next one, without meaningfully slowing the
+ *     CLI (the infra call itself takes ~2–4 s).
+ *   - Set to 0 to disable (e.g., in unit tests).
  */
+const INTER_CALL_STAGGER_MS = 2_000;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// IFeedbackManager — local interface (avoids importing infrastructure)
+// ─────────────────────────────────────────────────────────────────────────────
+
 export interface IFeedbackManager {
   readonly hasFeedback: boolean;
   buildSystemPromptSuffix(): string;
@@ -76,25 +99,15 @@ export interface IFeedbackManager {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export interface RunCodeReviewInput {
-  /** Absolute path to the project root directory. */
   baseDir: string;
-  /**
-   * Pre-loaded scan result (e.g., shared from the auto-init flow).
-   * When supplied, the file scanner is skipped.
-   */
   preloadedProject?: ScannedProject;
-  /** Whether to force a fresh authentication (ignore cached tokens). */
   forceLogin?: boolean;
-  /** Logger for debug output. No-op when debug mode is off. */
   logDebug: (msg: string) => void;
-  /** Progress spinner text updater (e.g. ora.text). No-op in non-interactive mode. */
   onProgress?: (message: string) => void;
 }
 
 export interface RunCodeReviewOutput {
-  /** The assembled report ready for rendering. */
   report: ProjectReport;
-  /** Path to the directory where files were written. */
   outputDir: string;
 }
 
@@ -104,9 +117,7 @@ export interface RunCodeReviewOutput {
 
 interface CacheState {
   fileHashes: Record<string, string>;
-  /** SHA-256 hashes of IaC files (Dockerfile, Terraform, k8s, etc.) */
   iacFileHashes?: Record<string, string>;
-  /** SHA-256 hashes of dependency manifests (package.json, pom.xml, etc.) */
   manifestHashes?: Record<string, string>;
   findings: ReviewFinding[];
   secretFindings?: unknown[];
@@ -125,24 +136,17 @@ interface CacheState {
 // RunCodeReview — the Use Case class
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * RunCodeReview
- *
- * Constructed via dependency injection in DependencyContainer.
- * Depends ONLY on core interfaces — no SDK or fs imports allowed here.
- */
 export class RunCodeReview {
   constructor(
     private readonly scanner: IFileScanner,
     private readonly aiProvider: IAiProvider,
-    /** OCP: iterate this pipeline without changing orchestration logic. */
     private readonly auditors: IProjectAuditor[],
     private readonly skillRepository: ISkillRepository,
     private readonly reportBuilder: IReportBuilder,
     private readonly feedbackManager: IFeedbackManager,
   ) {}
 
-  // ── Public entry point ────────────────────────────────────────────────────
+  // ── Public entry point ────────────────────────────────────────────────
 
   async execute(input: RunCodeReviewInput): Promise<RunCodeReviewOutput> {
     const {
@@ -154,31 +158,26 @@ export class RunCodeReview {
 
     const t0 = performance.now();
 
-    // ── Step 1: Scan the project (or reuse pre-loaded context) ───────────────
+    // ── Step 1: Scan ───────────────────────────────────────────────────────────────
     onProgress("Scanning project (code, IaC, configs)...");
     logDebug(`Scanning base directory: ${baseDir}`);
 
     const scanStart = performance.now();
     const project: ScannedProject = preloadedProject
-      ? (logDebug(
-          "Reusing pre-loaded ScannedProject (no second filesystem scan).",
-        ),
-        preloadedProject)
+      ? (logDebug("Reusing pre-loaded ScannedProject (no second filesystem scan)."), preloadedProject)
       : await this.scanner.scan(baseDir);
 
     const { codeFiles } = project;
-
     if (codeFiles.length === 0) {
       throw new NoSourceFilesError(`No source files found in ${baseDir}.`);
     }
-
     logDebug(`Scanned: ${codeFiles.length} source file(s).`);
 
-    // ── Step 2: Create output directory ──────────────────────────────────────
+    // ── Step 2: Output directory ───────────────────────────────────────────────
     const outputDir = path.join(baseDir, "gemini-code-reviewer");
     await nodefs.mkdir(outputDir, { recursive: true });
 
-    // ── Step 3: Load incremental review cache ────────────────────────────────
+    // ── Step 3: Incremental cache ──────────────────────────────────────────────
     const statePath = path.join(outputDir, ".gemini-code-reviewer.json");
     let previousState: CacheState | null = null;
     try {
@@ -192,13 +191,10 @@ export class RunCodeReview {
     const changedFiles = codeFiles.filter((f) => {
       const hash = crypto.createHash("sha256").update(f.content).digest("hex");
       currentFileHashes[f.filePath] = hash;
-      const unchanged =
-        previousState?.fileHashes &&
-        previousState.fileHashes[f.filePath] === hash;
+      const unchanged = previousState?.fileHashes?.[f.filePath] === hash;
       return !unchanged;
     });
 
-    // Carry over findings for unchanged files from the cache
     const unchangedFilePaths = codeFiles
       .map((f) => f.filePath)
       .filter((p) => !changedFiles.find((cf) => cf.filePath === p));
@@ -209,30 +205,22 @@ export class RunCodeReview {
         )
       : [];
 
-    // Fast-path: no changes since last review
     if (changedFiles.length === 0 && previousState) {
       logDebug("No file changes detected — returning cached report.");
-      const cachedReport = this.buildReportFromCache(
-        previousState,
-        currentFileHashes,
-      );
-      return { report: cachedReport, outputDir };
+      return { report: this.buildReportFromCache(previousState, currentFileHashes), outputDir };
     }
 
     logDebug(`Changed files: ${changedFiles.length}`);
     const scanMs = performance.now() - scanStart;
-    logDebug(
-      `[timing] scan: ${(scanMs / 1000).toFixed(2)}s (${codeFiles.length} files, ${changedFiles.length} changed)`,
-    );
+    logDebug(`[timing] scan: ${(scanMs / 1000).toFixed(2)}s (${codeFiles.length} files, ${changedFiles.length} changed)`);
 
-    // ── Step 4: Load skills context ───────────────────────────────────────────
+    // ── Step 4: Skills context ──────────────────────────────────────────────
     onProgress("Loading skills context...");
     const skillsContext = await this.skillRepository.loadSkillsContext(baseDir);
     logDebug(`Skills context: ${skillsContext.length} chars.`);
-
     const feedbackSuffix = this.feedbackManager.buildSystemPromptSuffix();
 
-    // ── Step 5: Run the auditor pipeline (OCP) ──────────────────────────────
+    // ── Step 5: Auditor pipeline ─────────────────────────────────────────────
     const auditStart = performance.now();
     const auditContext: AuditContext = {
       codeFiles,
@@ -253,30 +241,40 @@ export class RunCodeReview {
       logDebug(`Running auditor: ${auditor.name}`);
       try {
         const result = await auditor.audit(auditContext);
-        combinedAuditResult = this.mergeAuditResults(
-          combinedAuditResult,
-          result,
-        );
+        combinedAuditResult = this.mergeAuditResults(combinedAuditResult, result);
       } catch (e: any) {
         logDebug(`Auditor "${auditor.name}" failed: ${e.message}`);
-        // Individual auditor failures are non-fatal; pipeline continues
       }
     }
 
     const secretFindings = combinedAuditResult.secretFindings ?? [];
     const infraScannedFiles = combinedAuditResult.scannedFiles ?? [];
-    const isPublicFacing =
-      combinedAuditResult.isPublicFacing ?? project.isPublicFacing;
+    const isPublicFacing = combinedAuditResult.isPublicFacing ?? project.isPublicFacing;
     const auditMs = performance.now() - auditStart;
-    logDebug(
-      `[timing] audit: ${(auditMs / 1000).toFixed(2)}s` +
-        ` (${secretFindings.length} secret(s) detected)`,
-    );
+    logDebug(`[timing] audit: ${(auditMs / 1000).toFixed(2)}s (${secretFindings.length} secret(s) detected)`);
 
-    // ── Step 6: AI Review (Split: Code & Infrastructure) ──────────────────────
+    // ── Step 6: AI Review — sequential with inter-call stagger ────────────────
+    //
+    // WHY SEQUENTIAL (not Promise.all):
+    //   The Code Assist API enforces a per-project RPM (requests-per-minute)
+    //   quota. Firing both calls at t=0 means both arrive at the server in the
+    //   same quota window and one (or both) immediately receives a 429.
+    //   Each call then independently retries after its own backoff window
+    //   (15–60 s), which can double the total wait time.
+    //
+    //   Sequential guarantees only one in-flight request at a time.
+    //   The infra call is ~800 tokens (vs ~26 000 for code review), so it
+    //   completes in 2–3 s — the total wall-clock cost of sequencing is
+    //   negligible compared to a single 15 s 429 backoff.
+    //
+    //   The INTER_CALL_STAGGER_MS pause after the first call gives the
+    //   server-side quota window time to register the first request's
+    //   token consumption before the second call arrives.
+    // ────────────────────────────────────────────────────────────────────
+
     const reviewStart = performance.now();
 
-    // 1. Code Review Preparation
+    // — Prepare code review payload —
     const codePayload = changedFiles
       .map((f) => `<file path="${f.filePath}">\n${f.content}\n</file>`)
       .join("\n\n");
@@ -287,15 +285,13 @@ export class RunCodeReview {
       feedbackSuffix,
     };
 
-    // 2. Infrastructure Audit Preparation
+    // — Prepare infra audit payload —
     const currentIacHashes: Record<string, string> = {};
     const changedIacFiles: Record<string, string> = {};
     for (const [name, content] of Object.entries(project.iacFiles)) {
       const hash = crypto.createHash("sha256").update(content).digest("hex");
       currentIacHashes[name] = hash;
-      if (previousState?.iacFileHashes?.[name] !== hash) {
-        changedIacFiles[name] = content;
-      }
+      if (previousState?.iacFileHashes?.[name] !== hash) changedIacFiles[name] = content;
     }
 
     const currentManifestHashes: Record<string, string> = {};
@@ -303,42 +299,47 @@ export class RunCodeReview {
     for (const [name, content] of Object.entries(project.dependencyManifests)) {
       const hash = crypto.createHash("sha256").update(content).digest("hex");
       currentManifestHashes[name] = hash;
-      if (previousState?.manifestHashes?.[name] !== hash) {
-        changedManifests[name] = content;
-      }
+      if (previousState?.manifestHashes?.[name] !== hash) changedManifests[name] = content;
     }
 
-    // Generate project tree (full paths, no content) as structural context for infra audit
     const projectTree = codeFiles.map((f) => f.filePath).join("\n");
-
     const infraReviewRequest: InfraReviewRequest = {
       iacFiles: changedIacFiles,
       dependencyManifests: changedManifests,
       projectTree,
     };
 
-    onProgress("Sending split payloads to Gemini 2.5 Flash...");
     logDebug(
       `reviewProject: ${changedFiles.length} code file(s) → ~${Math.ceil(codePayload.length / 4)} tokens`,
     );
     logDebug(
       `reviewInfrastructure: ${Object.keys(changedIacFiles).length} IaC` +
-        ` + ${Object.keys(changedManifests).length} manifest(s) → ~${Math.ceil((JSON.stringify(changedIacFiles).length + JSON.stringify(changedManifests).length + projectTree.length) / 4)} tokens`,
+        ` + ${Object.keys(changedManifests).length} manifest(s)` +
+        ` → ~${Math.ceil((JSON.stringify(changedIacFiles).length + JSON.stringify(changedManifests).length + projectTree.length) / 4)} tokens`,
     );
 
-    // Call AI provider with two separate requests to avoid payload timeouts
-    const [codeReviewResult, infraReviewResult] = await Promise.all([
-      this.aiProvider.reviewProject(codeReviewRequest),
-      this.aiProvider.reviewInfrastructure(infraReviewRequest),
-    ]);
+    // — Call 1: Code Review (heavier, ~26k tokens) —
+    onProgress("Reviewing code with Gemini 2.5 Flash…");
+    const codeReviewResult = await this.aiProvider.reviewProject(codeReviewRequest);
+    logDebug(
+      `reviewProject complete: ${codeReviewResult.codeFindings.length} finding(s).` +
+        ` Staggering ${INTER_CALL_STAGGER_MS}ms before infra call…`,
+    );
+
+    // — Stagger pause: let the quota window register the first request —
+    if (INTER_CALL_STAGGER_MS > 0) await sleep(INTER_CALL_STAGGER_MS);
+
+    // — Call 2: Infra review (lighter, ~800 tokens) —
+    onProgress("Auditing infrastructure & dependencies…");
+    const infraReviewResult = await this.aiProvider.reviewInfrastructure(infraReviewRequest);
 
     const reviewMs = performance.now() - reviewStart;
     onProgress(
-      `Review complete — ${codeReviewResult.codeFindings.length} code finding(s), ${infraReviewResult.infraFindings.length} infra finding(s).`,
+      `Review complete — ${codeReviewResult.codeFindings.length} code finding(s),` +
+        ` ${infraReviewResult.infraFindings.length} infra finding(s).`,
     );
-
     logDebug(
-      `[timing] review (split calls): ${(reviewMs / 1000).toFixed(2)}s` +
+      `[timing] review (sequential): ${(reviewMs / 1000).toFixed(2)}s` +
         ` → ${codeReviewResult.codeFindings.length} code finding(s),` +
         ` ${infraReviewResult.infraFindings.length} infra finding(s)` +
         ` | SOLID=${codeReviewResult.subScores.solidPrinciplesScore ?? "—"}` +
@@ -348,47 +349,33 @@ export class RunCodeReview {
         ` dup=${codeReviewResult.subScores.codeDuplicationPercentage ?? "—"}%`,
     );
 
-    // Merge results for the rest of the pipeline
     const reviewResult = {
       codeFindings: codeReviewResult.codeFindings,
       infraFindings: infraReviewResult.infraFindings,
       subScores: codeReviewResult.subScores,
     };
 
-    // ── Step 7: Annotate findings with risk multipliers ───────────────────────
+    // ── Step 7: Annotate findings ─────────────────────────────────────────────
     for (const finding of reviewResult.codeFindings) {
       finding.riskMultiplier = this.getRiskMultiplier(finding.file);
-      // Resolve accurate line numbers from original (non-minified) content
       const fileMatch = changedFiles.find((f) => f.filePath === finding.file);
       if (fileMatch && finding.snippet) {
-        finding.line = this.resolveLineNumber(
-          fileMatch.originalContent,
-          finding.snippet,
-        );
+        finding.line = this.resolveLineNumber(fileMatch.originalContent, finding.snippet);
       }
     }
 
-    // Merge new findings with carried-over cached findings
-    const allCodeFindings: ReviewFinding[] = [
-      ...reviewResult.codeFindings,
-      ...oldFindings,
-    ];
-
-    // Filter confirmed false positives
+    const allCodeFindings: ReviewFinding[] = [...reviewResult.codeFindings, ...oldFindings];
     const filteredFindings = allCodeFindings.filter(
-      (f) =>
-        !this.feedbackManager.isFalsePositive(f.file, f.line, f.snippet ?? ""),
+      (f) => !this.feedbackManager.isFalsePositive(f.file, f.line, f.snippet ?? ""),
     );
-
-    // Combine infra findings (AI + static auditors)
     const allInfraFindings = [
       ...reviewResult.infraFindings,
       ...(combinedAuditResult.infraFindings ?? []),
     ];
 
-    // ── Step 8: Generate executive summary ────────────────────────────────────
+    // ── Step 8: Executive summary ───────────────────────────────────────────
     const summaryStart = performance.now();
-    onProgress("Generating Executive Summary...");
+    onProgress("Generating Executive Summary…");
 
     this.reportBuilder.addAiFindings(filteredFindings);
     this.reportBuilder.addSecretResults(secretFindings);
@@ -410,27 +397,20 @@ export class RunCodeReview {
       topHighFindings: filteredFindings
         .filter((f) => f.priority === "high")
         .slice(0, 10)
-        .map(
-          (f) => `- [${f.file}:${f.line}] ${f.suggestion?.slice(0, 120) ?? ""}`,
-        ),
+        .map((f) => `- [${f.file}:${f.line}] ${f.suggestion?.slice(0, 120) ?? ""}`),
       topInfraFindings: allInfraFindings
         .filter((f) => f.severity === "critical" || f.severity === "high")
         .slice(0, 5)
-        .map(
-          (f) =>
-            `- [${f.file}] ${f.title}: ${f.description?.slice(0, 100) ?? ""}`,
-        ),
+        .map((f) => `- [${f.file}] ${f.title}: ${f.description?.slice(0, 100) ?? ""}`),
     });
 
-    if (executiveSummary) {
-      this.reportBuilder.setExecutiveSummary(executiveSummary);
-    }
+    if (executiveSummary) this.reportBuilder.setExecutiveSummary(executiveSummary);
 
     const finalScore = this.reportBuilder.calculateFinalScore();
     const summaryMs = performance.now() - summaryStart;
     logDebug(`[timing] summary: ${(summaryMs / 1000).toFixed(2)}s`);
 
-    // ── Step 9: Compute timing stats ──────────────────────────────────────────
+    // ── Step 9: Timing stats ────────────────────────────────────────────────
     const totalMs = performance.now() - t0;
     const timingStats: TimingStats = {
       totalMs: Math.round(totalMs),
@@ -441,20 +421,19 @@ export class RunCodeReview {
       timestamp: new Date().toISOString(),
     };
 
-    // ── Timing table (debug mode only) ────────────────────────────────────────
     logDebug(
-      "[timing] ─────────────────────────────────────────\n" +
+      "[timing] ────────────────────────────────────────────────\n" +
         `         scan    : ${(scanMs / 1000).toFixed(2)}s\n` +
         `         audit   : ${(auditMs / 1000).toFixed(2)}s\n` +
-        `         review  : ${(reviewMs / 1000).toFixed(2)}s  ← single LLM call\n` +
+        `         review  : ${(reviewMs / 1000).toFixed(2)}s  ← code → [${INTER_CALL_STAGGER_MS}ms stagger] → infra\n` +
         `         summary : ${(summaryMs / 1000).toFixed(2)}s\n` +
-        `         ─────────────────────────────────────────\n` +
+        `         ────────────────────────────────────────────────\n` +
         `         TOTAL   : ${(totalMs / 1000).toFixed(2)}s  |  score: ${finalScore}/100`,
     );
 
     this.reportBuilder.setTimingStats(timingStats);
 
-    // ── Step 10: Persist the cache ────────────────────────────────────────────
+    // ── Step 10: Persist cache ──────────────────────────────────────────────
     const cacheState: CacheState = {
       fileHashes: currentFileHashes,
       iacFileHashes: currentIacHashes,
@@ -466,24 +445,19 @@ export class RunCodeReview {
       executiveSummary,
       namingConventionScore: reviewResult.subScores.namingConventionScore,
       solidPrinciplesScore: reviewResult.subScores.solidPrinciplesScore,
-      codeDuplicationPercentage:
-        reviewResult.subScores.codeDuplicationPercentage,
+      codeDuplicationPercentage: reviewResult.subScores.codeDuplicationPercentage,
       cyclomaticComplexity: reviewResult.subScores.cyclomaticComplexity,
       maintainabilityIndex: reviewResult.subScores.maintainabilityIndex,
       timingStats,
     };
 
     try {
-      await nodefs.writeFile(
-        statePath,
-        JSON.stringify(cacheState, null, 2),
-        "utf-8",
-      );
+      await nodefs.writeFile(statePath, JSON.stringify(cacheState, null, 2), "utf-8");
     } catch (err: any) {
       logDebug(`Could not save cache to ${statePath}: ${err.message}`);
     }
 
-    // ── Step 11: Assemble the final ProjectReport ─────────────────────────────
+    // ── Step 11: Assemble final report ─────────────────────────────────────────
     const report: ProjectReport = {
       codeFindings: filteredFindings,
       secretFindings,
@@ -500,36 +474,18 @@ export class RunCodeReview {
     return { report, outputDir };
   }
 
-  // ── Private helpers ───────────────────────────────────────────────────────
+  // ── Private helpers ────────────────────────────────────────────────
 
-  private mergeAuditResults(
-    base: AuditResult,
-    addition: AuditResult,
-  ): AuditResult {
+  private mergeAuditResults(base: AuditResult, addition: AuditResult): AuditResult {
     return {
-      codeFindings: [
-        ...(base.codeFindings ?? []),
-        ...(addition.codeFindings ?? []),
-      ],
-      secretFindings: [
-        ...(base.secretFindings ?? []),
-        ...(addition.secretFindings ?? []),
-      ],
-      infraFindings: [
-        ...(base.infraFindings ?? []),
-        ...(addition.infraFindings ?? []),
-      ],
-      scannedFiles: [
-        ...(base.scannedFiles ?? []),
-        ...(addition.scannedFiles ?? []),
-      ],
+      codeFindings: [...(base.codeFindings ?? []), ...(addition.codeFindings ?? [])],
+      secretFindings: [...(base.secretFindings ?? []), ...(addition.secretFindings ?? [])],
+      infraFindings: [...(base.infraFindings ?? []), ...(addition.infraFindings ?? [])],
+      scannedFiles: [...(base.scannedFiles ?? []), ...(addition.scannedFiles ?? [])],
       isPublicFacing: addition.isPublicFacing ?? base.isPublicFacing,
     };
   }
 
-  /**
-   * Resolves the line number for a snippet using whitespace-normalised matching.
-   */
   private resolveLineNumber(originalContent: string, snippet: string): number {
     if (!snippet || typeof snippet !== "string") return 1;
     const lines = originalContent.split("\n");
@@ -541,42 +497,18 @@ export class RunCodeReview {
     for (let j = 0; j < lines.length; j++) {
       const stripped = lines[j].replace(/\s+/g, "");
       normContent += stripped;
-      for (let k = 0; k < stripped.length; k++) {
-        indexToLine.push(j + 1);
-      }
+      for (let k = 0; k < stripped.length; k++) indexToLine.push(j + 1);
     }
 
     const matchIndex = normContent.indexOf(normSnippet);
     return matchIndex !== -1 ? (indexToLine[matchIndex] ?? 1) : 1;
   }
 
-  /**
-   * Simplified path-based risk multiplier.
-   * Public-facing files get a higher multiplier to amplify score penalties.
-   */
   private getRiskMultiplier(filePath: string): number {
     const parts = filePath.replace(/\\/g, "/").toLowerCase().split("/");
-    const PUBLIC_FACING = [
-      "controller",
-      "controllers",
-      "route",
-      "routes",
-      "api",
-      "endpoint",
-      "handler",
-      "resolver",
-      "gateway",
-    ];
-    const BUSINESS = [
-      "service",
-      "services",
-      "manager",
-      "usecase",
-      "domain",
-      "repository",
-    ];
+    const PUBLIC_FACING = ["controller", "controllers", "route", "routes", "api", "endpoint", "handler", "resolver", "gateway"];
+    const BUSINESS = ["service", "services", "manager", "usecase", "domain", "repository"];
     const TEST = ["spec", "test", "__tests__"];
-
     if (TEST.some((s) => parts.includes(s))) return 0.3;
     if (PUBLIC_FACING.some((s) => parts.includes(s))) return 2.0;
     if (BUSINESS.some((s) => parts.includes(s))) return 1.3;
@@ -593,8 +525,7 @@ export class RunCodeReview {
       infraFindings: (state.infraFindings as InfraFindingEntity[]) ?? [],
       isPublicFacing: state.isPublicFacing ?? false,
       infraScannedFiles: [],
-      executiveSummary:
-        state.executiveSummary as ProjectReport["executiveSummary"],
+      executiveSummary: state.executiveSummary as ProjectReport["executiveSummary"],
       aiSubScores: {
         namingConventionScore: state.namingConventionScore,
         solidPrinciplesScore: state.solidPrinciplesScore,
