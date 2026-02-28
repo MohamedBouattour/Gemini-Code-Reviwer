@@ -6,14 +6,14 @@
  * Each auditor receives an AuditContext (project snapshot) and returns
  * an AuditResult contributing findings to the final report.
  *
- * AuditContext now carries `logDebug` so auditors that run AI calls
- * (e.g. InfraAuditorAdapter) can emit properly prefixed debug lines
- * without depending on the Logger utility directly.
+ * AuditContext carries `logDebug` so AI-backed auditors can emit debug
+ * lines without depending on the Logger utility directly.
  */
 
 import type { CodeSegment } from "../entities/CodeSegment.js";
 import type { ReviewFinding } from "../entities/ReviewFinding.js";
 import type { SecretFindingEntity, InfraFindingEntity } from "../entities/ProjectReport.js";
+import type { CodeBenchmarkResults } from "../entities/CodeBenchmarkResults.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // AuditContext
@@ -28,11 +28,7 @@ export interface AuditContext {
   dependencyManifests: Record<string, string>;
   /** True when IaC heuristics detect public internet exposure. */
   isPublicFacing: boolean;
-  /**
-   * Optional debug logger injected by RunCodeReview.
-   * Auditors should use this instead of console.log so output respects
-   * the --debug flag and is consistently prefixed.
-   */
+  /** Optional debug logger — respects the --debug flag. */
   logDebug?: (msg: string) => void;
 }
 
@@ -44,10 +40,15 @@ export interface AuditResult {
   codeFindings?: ReviewFinding[];
   secretFindings?: SecretFindingEntity[];
   infraFindings?: InfraFindingEntity[];
-  /** Paths of files that were scanned (for the report's scanned-files list). */
+  /** Paths of files scanned (for the report’s scanned-files list). */
   scannedFiles?: string[];
   /** Override public-facing status if the auditor can determine it. */
   isPublicFacing?: boolean;
+  /**
+   * Local benchmark metrics produced by CodeBenchmarkAuditor.
+   * Merged into ProjectReport.localBenchmarks by RunCodeReview.
+   */
+  benchmarks?: CodeBenchmarkResults;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -55,7 +56,6 @@ export interface AuditResult {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export interface IProjectAuditor {
-  /** Human-readable name shown in progress spinner and debug output. */
   readonly name: string;
   audit(context: AuditContext): Promise<AuditResult>;
 }
