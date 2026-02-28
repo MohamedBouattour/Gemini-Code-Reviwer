@@ -72,14 +72,10 @@ export interface TimingStats {
   scanMs: number;
   /** All auditors (secrets, infra, etc.). */
   auditMs: number;
-  /** Shallow oneshot global-metrics scan. */
-  shallowReviewMs: number;
-  /** Sum of all deep chunk review calls. */
-  deepReviewMs: number;
+  /** Single unified AI review call (code + infra). */
+  reviewMs: number;
   /** Executive summary generation. */
   summaryMs: number;
-  /** Number of deep chunks processed. */
-  deepChunkCount: number;
   /** Timestamp when the review was run. */
   timestamp: string;
 }

@@ -25,6 +25,10 @@ import type {
 } from "../core/interfaces/IFileScanner.js";
 import type { IAiProvider } from "../core/interfaces/IAiProvider.js";
 import type { ISkillRepository } from "../core/interfaces/ISkillRepository.js";
+import {
+  BUILD_SKILLS_SYSTEM_PROMPT,
+  BUILD_FRESH_SKILLS_PROMPT,
+} from "../infrastructure/ai/prompts.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Constants
@@ -244,21 +248,7 @@ ${summaryLines.map((l) => `║  ${l}`).join("\n")}
   ): string {
     const sections: string[] = [];
 
-    sections.push(`You are an expert software architect and DevOps engineer.\n\n\
-Your task is to generate or improve 4 SKILL.md files for the gemini-cli agent skill system.\n\n\
-Each SKILL.md MUST begin with YAML frontmatter:\n\
-\`\`\`\n\
----\n\
-name: <kebab-case-skill-name>\n\
-description: <one sentence description>\n\
----\n\
-\`\`\`\n\
-Then rich Markdown body that is **concrete, actionable, and specific** to the detected\n\
-technologies — avoid generic advice.\n\n\
-Return a **valid JSON object** with exactly these 4 top-level keys:\n\
-  "coding-standards", "testing-philosophy", "ci-cd-requirements", "architecture-patterns"\n\
-Each value is the complete SKILL.md content (frontmatter + body).\n\
-No commentary outside the JSON.`);
+    sections.push(BUILD_SKILLS_SYSTEM_PROMPT);
 
     sections.push(...this.buildProjectContextSections(project));
     sections.push(this.buildPerSkillInstructions(skillInfos));
@@ -269,13 +259,7 @@ No commentary outside the JSON.`);
   private buildFreshSkillsPrompt(project: ScannedProject): string {
     const sections: string[] = [];
 
-    sections.push(`You are an expert software architect and DevOps engineer.\n\
-Based exclusively on the project metadata and code samples provided, generate 4 SKILL.md files.\n\n\
-Each SKILL.md MUST begin with YAML frontmatter (name + description), then a rich Markdown body.\n\
-Be concrete and specific to the detected technologies — avoid generic copy-paste advice.\n\n\
-Return a valid JSON object with exactly:\n\
-  "coding-standards", "testing-philosophy", "ci-cd-requirements", "architecture-patterns"\n\
-Each value is the full SKILL.md content. No commentary outside the JSON.`);
+    sections.push(BUILD_FRESH_SKILLS_PROMPT);
 
     sections.push(...this.buildProjectContextSections(project));
 

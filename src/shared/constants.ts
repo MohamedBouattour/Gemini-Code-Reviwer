@@ -20,17 +20,6 @@ export enum GeminiModel {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Token / payload thresholds
-// ─────────────────────────────────────────────────────────────────────────────
-
-/**
- * Character limit per deep-review chunk (≈5k tokens).
- * The chunked pipeline splits the codebase into pieces of this size
- * so each AI call stays fast and focused.
- */
-export const CHUNK_CHAR_THRESHOLD = 20000;
-
-// ─────────────────────────────────────────────────────────────────────────────
 // OAuth / Authentication
 // ─────────────────────────────────────────────────────────────────────────────
 

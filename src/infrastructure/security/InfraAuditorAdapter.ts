@@ -1,14 +1,15 @@
 // Copyright 2026 Google LLC
 
 /**
- * InfraAuditorAdapter — IProjectAuditor for IaC/SCA security analysis.
+ * InfraAuditorAdapter — DEPRECATED / NO-OP.
  *
- * Delegates the actual AI call to IAiProvider.auditInfrastructure().
- * This keeps infrastructure concerns (Gemini API) in GeminiProvider,
- * and orchestration concerns in RunCodeReview.
+ * Infrastructure and SCA analysis is now part of the unified
+ * IAiProvider.reviewProject() call in GeminiProvider.
+ * This file is kept as a placeholder to avoid breaking existing imports
+ * in the DependencyContainer; it contributes zero findings.
  *
- * Plugs into the auditor pipeline — adding another infrastructure-based auditor
- * requires zero changes to RunCodeReview.
+ * TODO: Remove this file and its registration in DependencyContainer
+ *       in a future cleanup pass.
  */
 
 import type {
@@ -17,33 +18,22 @@ import type {
   AuditResult,
 } from "../../core/interfaces/IProjectAuditor.js";
 import type { IAiProvider } from "../../core/interfaces/IAiProvider.js";
-import { detectPublicExposure } from "../security/exposureDetector.js";
 
 export class InfraAuditorAdapter implements IProjectAuditor {
   readonly name = "Infrastructure & Dependency Audit (IaC/SCA)";
 
   constructor(private readonly aiProvider: IAiProvider) {}
 
+  /**
+   * No-op: infra findings are now returned by reviewProject() in the main AI call.
+   */
   async audit(context: AuditContext): Promise<AuditResult> {
-    const infraFindings = await this.aiProvider.auditInfrastructure(
-      context.iacFiles,
-      context.dependencyManifests,
-    );
-
-    const scannedFiles = [
-      ...Object.keys(context.iacFiles),
-      ...Object.keys(context.dependencyManifests),
-    ];
-
-    // Re-check internet-facing status from CI file content
-    const ciContents = Object.values(context.iacFiles);
-    const isPublicFacing =
-      context.isPublicFacing || detectPublicExposure(ciContents);
-
+    void context;
+    void this.aiProvider;
     return {
-      infraFindings,
-      scannedFiles,
-      isPublicFacing,
+      infraFindings: [],
+      scannedFiles: [],
+      isPublicFacing: undefined,
     };
   }
 }

@@ -23,15 +23,45 @@ import type {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * A self-contained batch of code files sent to the AI for review.
- * The orchestrator splits the full project into several of these
- * to stay within token limits.
+ * The project payload for a code-focussed review.
  */
-export interface CodeReviewBatch {
-  /** The combined XML-tagged payload for the AI prompt. */
-  payload: string;
-  /** Relative paths of the files in this batch (for progress reporting). */
-  files: string[];
+export interface ProjectReviewRequest {
+  /** Combined XML-tagged code payload for all changed source files. */
+  codePayload: string;
+  /** Optional skills context injected into the system prompt. */
+  skillsContext?: string;
+  /** Optional false-positive suppression suffix for the system prompt. */
+  feedbackSuffix?: string;
+}
+
+/**
+ * The project payload for an infrastructure/SCA-focussed review.
+ */
+export interface InfraReviewRequest {
+  /** IaC files: map of relative-path → content. */
+  iacFiles: Record<string, string>;
+  /** Dependency manifests: map of relative-path → content. */
+  dependencyManifests: Record<string, string>;
+  /** A text representation of the project file tree (without contents). */
+  projectTree: string;
+}
+
+/**
+ * The result of a code-focussed review call.
+ */
+export interface ProjectReviewResult {
+  /** AI-generated code findings. */
+  codeFindings: ReviewFinding[];
+  /** Sub-scores for display in the report. */
+  subScores: AiSubScores;
+}
+
+/**
+ * The result of an infrastructure/SCA-focussed review call.
+ */
+export interface InfraReviewResult {
+  /** AI-generated infra and SCA findings. */
+  infraFindings: InfraFindingEntity[];
 }
 
 /** Context needed by the AI to understand how to score the summary. */
@@ -62,56 +92,20 @@ export interface ExecutiveSummaryInput {
  */
 export interface IAiProvider {
   /**
-   * Review a single batch of code files.
+   * Perform a code review focussing on quality, architecture, and security.
    *
-   * The provider is responsible for:
-   *   - Constructing the system prompt (taint analysis instructions, skills
-   *     context, feedback suppressions, etc.)
-   *   - Calling the underlying AI model
-   *   - Parsing and returning structured findings + batch sub-scores
-   *
-   * The application layer does NOT know about prompts, schemas, or models.
-   *
-   * @param batch     The code payload to review.
-   * @param context   Optional strings injected into the system prompt
-   *                  (e.g., skills context, false-positive suppressions).
-   * @returns         The findings and sub-scores for this batch.
+   * @param request  Code payload and skill context.
+   * @returns        Code findings and quality sub-scores.
    */
-  reviewCodeBatch(
-    batch: CodeReviewBatch,
-    context?: { skillsContext?: string; feedbackSuffix?: string },
-  ): Promise<CodeBatchResult>;
+  reviewProject(request: ProjectReviewRequest): Promise<ProjectReviewResult>;
 
   /**
-   * Shallow / fast whole-codebase scan.
+   * Perform an infrastructure and dependency (SCA) audit.
    *
-   * Sends the **entire** codebase in a single request with a lightweight
-   * prompt that only asks for global metrics (code duplication %,
-   * cyclomatic complexity, maintainability index).
-   *
-   * This corresponds to scores that require 100% codebase visibility
-   * and cannot be computed per-chunk.
-   *
-   * @param payload   The combined XML-tagged payload of ALL files.
-   * @returns         Global-level sub-scores only (no findings).
+   * @param request  IaC files, manifests, and project tree.
+   * @returns        Infra and SCA findings.
    */
-  shallowReviewFull(payload: string): Promise<ShallowReviewResult>;
-
-  /**
-   * Deep / detailed review of a small code chunk (~5k tokens).
-   *
-   * Called once per chunk. Produces detailed findings plus per-chunk
-   * naming and SOLID scores. Each call is fast because the payload
-   * is small.
-   *
-   * @param batch     A chunk-sized code payload.
-   * @param context   Optional strings injected into the system prompt.
-   * @returns         The findings and sub-scores for this chunk.
-   */
-  deepReviewChunk(
-    batch: CodeReviewBatch,
-    context?: { skillsContext?: string; feedbackSuffix?: string },
-  ): Promise<CodeBatchResult>;
+  reviewInfrastructure(request: InfraReviewRequest): Promise<InfraReviewResult>;
 
   /**
    * Generate a three-paragraph executive summary from the aggregated findings.
@@ -127,20 +121,6 @@ export interface IAiProvider {
   ): Promise<ExecutiveSummary | undefined>;
 
   /**
-   * Audit IaC and dependency manifests for security misconfigurations.
-   *
-   * This is separated from `reviewCodeBatch` because it uses a different
-   * model temperature, system prompt, and response schema.
-   *
-   * @param iacFiles             Map of relative-path → file-content for IaC files.
-   * @param dependencyManifests  Map of relative-path → file-content for package lock files, etc.
-   */
-  auditInfrastructure(
-    iacFiles: Record<string, string>,
-    dependencyManifests: Record<string, string>,
-  ): Promise<InfraFindingEntity[]>;
-
-  /**
    * Generate or improve `.agents/skills/` SKILL.md files.
    *
    * Used by the BootstrapProject use case (the `init` command).
@@ -149,26 +129,4 @@ export interface IAiProvider {
    * @returns       A map from skill name to SKILL.md content.
    */
   generateSkills(prompt: string): Promise<Record<string, string>>;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Return types
-// ─────────────────────────────────────────────────────────────────────────────
-
-/**
- * Result of a single code review batch call.
- */
-export interface CodeBatchResult {
-  findings: ReviewFinding[];
-  subScores: AiSubScores;
-}
-
-/**
- * Result of the shallow / oneshot whole-codebase scan.
- * Contains only the global metrics that require full codebase visibility.
- */
-export interface ShallowReviewResult {
-  codeDuplicationPercentage: number;
-  cyclomaticComplexity: number;
-  maintainabilityIndex: number;
 }

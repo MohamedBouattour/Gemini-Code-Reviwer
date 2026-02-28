@@ -33,92 +33,46 @@ interface SecretRule {
 const SECRET_RULES: SecretRule[] = [
   {
     type: "aws-access-key",
-    label: "AWS Access Key ID",
-    pattern: /\bAKIA[0-9A-Z]{16}\b/g,
+    label: "AWS Access Key",
+    pattern: /AKIA[0-9A-Z]{16}/g,
     severity: "critical",
   },
   {
-    type: "aws-secret-key",
-    label: "AWS Secret Access Key",
-    pattern:
-      /(?:aws[_-]?secret[_-]?access[_-]?key|AWS_SECRET_ACCESS_KEY)\s*[:=]\s*["']([A-Za-z0-9/+=]{40})["']/gi,
+    type: "generic-api-key",
+    label: "Generic API Key",
+    pattern: /(?:api[_-]?key|apikey)\s*[:=]\s*["']?([A-Za-z0-9_\-]{20,})/gi,
     severity: "critical",
-  },
-  {
-    type: "gcp-api-key",
-    label: "Google / GCP API Key",
-    pattern: /AIza[0-9A-Za-z\-_]{35}/g,
-    severity: "critical",
-  },
-  {
-    type: "github-token",
-    label: "GitHub Personal Access Token",
-    pattern: /\b(ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{36}\b/g,
-    severity: "critical",
-  },
-  {
-    type: "stripe-secret-key",
-    label: "Stripe Secret Key",
-    pattern: /\bsk_live_[0-9a-zA-Z]{24,}\b/g,
-    severity: "critical",
-  },
-  {
-    type: "sendgrid-key",
-    label: "SendGrid API Key",
-    pattern: /\bSG\.[a-zA-Z0-9\-_]{22}\.[a-zA-Z0-9\-_]{43}\b/g,
-    severity: "high",
-  },
-  {
-    type: "slack-token",
-    label: "Slack Token",
-    pattern: /\bxox[baprs]-[0-9a-zA-Z\-]{10,}/g,
-    severity: "high",
-  },
-  {
-    type: "twilio-key",
-    label: "Twilio API Key",
-    pattern: /\bSK[0-9a-fA-F]{32}\b/g,
-    severity: "high",
   },
   {
     type: "pem-private-key",
-    label: "PEM Private Key",
-    pattern: /-----BEGIN (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----/g,
+    label: "Private Key PEM",
+    pattern: /-----BEGIN (RSA|EC|DSA|OPENSSH) PRIVATE KEY-----/g,
+    severity: "critical",
+  },
+  {
+    type: "bearer-token",
+    label: "Bearer Token",
+    pattern: /bearer\s+[A-Za-z0-9\-._~+/]{20,}/gi,
     severity: "critical",
   },
   {
     type: "database-url",
-    label: "Hardcoded Database URL (with credentials)",
-    pattern:
-      /\b(?:mongodb|postgresql|mysql|redis|amqps?):\/\/[^:@\s]+:[^@\s]{4,}@[^\s"']+/gi,
+    label: "DB Connection",
+    pattern: /(?:mongodb|postgres|mysql|redis):\/\/[^\s"']+:[^\s"']+@/gi,
     severity: "critical",
   },
   {
     type: "hardcoded-password",
     label: "Hardcoded Password",
     pattern:
-      /\b(?:password|passwd|pwd)\s*[:=]\s*["'](?!.*\$\{|.*process\.env)[^"']{6,}["']/gi,
-    severity: "high",
+      /(?:password|passwd|pwd)\s*[:=]\s*(?:["']|)(?!process\.env|process\[|window\.|document\.|.*\$)([^\s"']{8,})(?:["']|)/gi,
+    severity: "critical",
   },
   {
-    type: "hardcoded-bearer-token",
-    label: "Hardcoded Bearer / Authorization Token",
-    pattern: /[Aa]uthorization\s*:\s*["']Bearer\s+[A-Za-z0-9\-._~+/]+=*["']/g,
-    severity: "high",
-  },
-  {
-    type: "generic-api-key",
-    label: "Generic Hardcoded API Key",
-    pattern:
-      /\b(?:api[_-]?key|api[_-]?secret|x[_-]api[_-]key)\s*[:=]\s*["'](?!.*\$\{|.*process\.env)[^"']{16,}["']/gi,
-    severity: "high",
-  },
-  {
-    type: "generic-secret",
-    label: "Generic Hardcoded Secret / Token",
-    pattern:
-      /\b(?:secret|token|auth[_-]?token|access[_-]?token|refresh[_-]?token)\s*[:=]\s*["'](?!.*\$\{|.*process\.env)[^"']{20,}["']/gi,
-    severity: "high",
+    type: "github-token",
+    label: "GitHub Token",
+    pattern: /ghp_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{82}/g,
+    severity: "critical",
   },
 ];
 
@@ -132,6 +86,7 @@ export class StaticSecurityAuditor implements IProjectAuditor {
   async audit(context: AuditContext): Promise<AuditResult> {
     const secretFindings: SecretFindingEntity[] = [];
 
+    // METHOD 1: Regex scan
     for (const file of context.codeFiles) {
       for (const rule of SECRET_RULES) {
         rule.pattern.lastIndex = 0;
@@ -154,6 +109,25 @@ export class StaticSecurityAuditor implements IProjectAuditor {
 
         rule.pattern.lastIndex = 0;
       }
+
+      // METHOD 2: Shannon Entropy
+      const stringLiterals = this.extractStringLiterals(file.originalContent);
+      for (const literal of stringLiterals) {
+        if (
+          literal.value.length > 20 &&
+          this.calculateEntropy(literal.value) > 4.5 &&
+          !this.isUrlPathOrImport(literal.value)
+        ) {
+          secretFindings.push({
+            file: file.filePath,
+            line: literal.line,
+            patternType: "high-entropy-string",
+            label: "High Entropy String",
+            snippet: this.redact(literal.value),
+            severity: "critical",
+          });
+        }
+      }
     }
 
     // Sort: critical first, then by file, then by line
@@ -173,5 +147,42 @@ export class StaticSecurityAuditor implements IProjectAuditor {
   private redact(value: string): string {
     if (value.length <= 10) return "***";
     return value.slice(0, 10) + "***[REDACTED]";
+  }
+
+  private extractStringLiterals(
+    content: string,
+  ): Array<{ value: string; line: number }> {
+    const literals: Array<{ value: string; line: number }> = [];
+    const lines = content.split("\n");
+    const regex = /(["'`])((?:(?=(\\?))\3.)*?)\1/g;
+
+    for (let i = 0; i < lines.length; i++) {
+      let match;
+      while ((match = regex.exec(lines[i])) !== null) {
+        literals.push({ value: match[2], line: i + 1 });
+      }
+    }
+    return literals;
+  }
+
+  private calculateEntropy(str: string): number {
+    const len = str.length;
+    const frequencies: Record<string, number> = {};
+    for (let i = 0; i < len; i++) {
+      const char = str[i];
+      frequencies[char] = (frequencies[char] || 0) + 1;
+    }
+
+    return Object.values(frequencies).reduce((sum, freq) => {
+      const p = freq / len;
+      return sum - p * Math.log2(p);
+    }, 0);
+  }
+
+  private isUrlPathOrImport(str: string): boolean {
+    if (/^https?:\/\//i.test(str)) return true;
+    if (/^[\w.\-\/]+\/[\w.\-\/]+$/.test(str)) return true;
+    if (/^@[a-z0-9-]+\/[a-z0-9-]+$/i.test(str)) return true;
+    return false;
   }
 }

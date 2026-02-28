@@ -20,10 +20,7 @@ import type {
   IReportBuilder,
   InfrastructureResults,
 } from "../../core/interfaces/IReportBuilder.js";
-import type {
-  ReviewFinding,
-  RecommendedFix,
-} from "../../core/entities/ReviewFinding.js";
+import type { ReviewFinding } from "../../core/entities/ReviewFinding.js";
 import type {
   SecretFindingEntity,
   InfraFindingEntity,
@@ -529,9 +526,8 @@ function renderTimingStats(stats: TimingStats): string {
   let out = "## ⏱️ Pipeline Timing\n\n";
   out += "| Phase | Duration |\n|:---|---:|\n";
   out += `| File scan + hashing | ${fmt(stats.scanMs)} |\n`;
-  out += `| Auditors (secrets, infra) | ${fmt(stats.auditMs)} |\n`;
-  out += `| Shallow oneshot (global metrics) | ${fmt(stats.shallowReviewMs)} |\n`;
-  out += `| Deep review (${stats.deepChunkCount} chunk${stats.deepChunkCount !== 1 ? "s" : ""}) | ${fmt(stats.deepReviewMs)} |\n`;
+  out += `| Auditors (secrets) | ${fmt(stats.auditMs)} |\n`;
+  out += `| AI review (code + infra, single call) | ${fmt(stats.reviewMs)} |\n`;
   out += `| Executive summary | ${fmt(stats.summaryMs)} |\n`;
   out += `| **Total** | **${fmt(stats.totalMs)}** |\n`;
   out += "\n";
@@ -724,7 +720,6 @@ export class ReportBuilder implements IReportBuilder {
 export function generateMarkdownReport(
   data: CodeReviewResponse,
   useChalk = false,
-  _infraScannedFiles: string[] = [],
 ): string {
   return ReportBuilder.fromCachedResponse(data).build(useChalk);
 }

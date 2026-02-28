@@ -10,10 +10,15 @@
  * ## Dependencies (all via interfaces — DIP)
  *   - IFileScanner      (provided by FastGlobScanner)
  *   - IAiProvider       (provided by GeminiProvider)
- *   - IProjectAuditor[] (pipeline — StaticSecurityAuditor, InfraAuditor, …)
+ *   - IProjectAuditor[] (pipeline — StaticSecurityAuditor, …)
  *   - ISkillRepository  (provided by LocalSkillRepository)
  *   - IReportBuilder    (provided by MarkdownReportBuilder)
  *   - IFeedbackManager  (provided by FeedbackManager — read-only)
+ *
+ * ## Single-call AI design
+ *   ONE request to Gemini 2.5 Flash with the full code + IaC + manifest
+ *   payload returns all findings, infra issues, and sub-scores together.
+ *   No chunking, no triage pass, no sequential iteration.
  *
  * ## OCP: Auditor Pipeline
  *   Adding a new IProjectAuditor (e.g. LicenseAuditor) requires:
@@ -28,8 +33,8 @@ import * as path from "node:path";
 
 import type {
   IAiProvider,
-  CodeReviewBatch,
-  ShallowReviewResult,
+  ProjectReviewRequest,
+  InfraReviewRequest,
 } from "../core/interfaces/IAiProvider.js";
 import type {
   IFileScanner,
@@ -44,15 +49,12 @@ import type { ISkillRepository } from "../core/interfaces/ISkillRepository.js";
 import type { IReportBuilder } from "../core/interfaces/IReportBuilder.js";
 import type {
   ProjectReport,
-  AiSubScores,
+  SecretFindingEntity,
+  InfraFindingEntity,
   TimingStats,
 } from "../core/entities/ProjectReport.js";
 import type { ReviewFinding } from "../core/entities/ReviewFinding.js";
-import {
-  NoSourceFilesError,
-  AllBatchesFailedError,
-} from "../core/domain-errors/ReviewerErrors.js";
-import { CHUNK_CHAR_THRESHOLD } from "../shared/constants.js";
+import { NoSourceFilesError } from "../core/domain-errors/ReviewerErrors.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // IFeedbackManager — local interface (avoids importing infrastructure)
@@ -102,6 +104,10 @@ export interface RunCodeReviewOutput {
 
 interface CacheState {
   fileHashes: Record<string, string>;
+  /** SHA-256 hashes of IaC files (Dockerfile, Terraform, k8s, etc.) */
+  iacFileHashes?: Record<string, string>;
+  /** SHA-256 hashes of dependency manifests (package.json, pom.xml, etc.) */
+  manifestHashes?: Record<string, string>;
   findings: ReviewFinding[];
   secretFindings?: unknown[];
   infraFindings?: unknown[];
@@ -182,7 +188,6 @@ export class RunCodeReview {
       // No cache yet — full review
     }
 
-    // ── Step 4: Detect changed files ─────────────────────────────────────────
     const currentFileHashes: Record<string, string> = {};
     const changedFiles = codeFiles.filter((f) => {
       const hash = crypto.createHash("sha256").update(f.content).digest("hex");
@@ -193,11 +198,11 @@ export class RunCodeReview {
       return !unchanged;
     });
 
+    // Carry over findings for unchanged files from the cache
     const unchangedFilePaths = codeFiles
       .map((f) => f.filePath)
       .filter((p) => !changedFiles.find((cf) => cf.filePath === p));
 
-    // Carry over findings for unchanged files from the cache
     const oldFindings: ReviewFinding[] = previousState?.findings
       ? (previousState.findings as ReviewFinding[]).filter((f) =>
           unchangedFilePaths.includes(f.file),
@@ -215,16 +220,19 @@ export class RunCodeReview {
     }
 
     logDebug(`Changed files: ${changedFiles.length}`);
+    const scanMs = performance.now() - scanStart;
+    logDebug(
+      `[timing] scan: ${(scanMs / 1000).toFixed(2)}s (${codeFiles.length} files, ${changedFiles.length} changed)`,
+    );
 
-    // ── Step 5: Load skills context ───────────────────────────────────────────
+    // ── Step 4: Load skills context ───────────────────────────────────────────
     onProgress("Loading skills context...");
     const skillsContext = await this.skillRepository.loadSkillsContext(baseDir);
     logDebug(`Skills context: ${skillsContext.length} chars.`);
 
     const feedbackSuffix = this.feedbackManager.buildSystemPromptSuffix();
-    const scanMs = performance.now() - scanStart;
 
-    // ── Step 6: Run the auditor pipeline (OCP) ───────────────────────────────
+    // ── Step 5: Run the auditor pipeline (OCP) ──────────────────────────────
     const auditStart = performance.now();
     const auditContext: AuditContext = {
       codeFiles,
@@ -256,147 +264,147 @@ export class RunCodeReview {
     }
 
     const secretFindings = combinedAuditResult.secretFindings ?? [];
-    const infraFindings = combinedAuditResult.infraFindings ?? [];
     const infraScannedFiles = combinedAuditResult.scannedFiles ?? [];
     const isPublicFacing =
       combinedAuditResult.isPublicFacing ?? project.isPublicFacing;
     const auditMs = performance.now() - auditStart;
-
-    // ── Step 7: Dual-mode AI review (sequential to respect rate limits) ────────
-    //
-    // Two sequential phases:
-    //   A) Shallow oneshot — sends ALL code in one request for global metrics
-    //      (code duplication, cyclomatic complexity, maintainability index).
-    //      These scores require 100% codebase visibility.
-    //
-    //   B) Deep chunks — splits code into ~5k-token chunks and reviews each
-    //      one sequentially for detailed findings + per-chunk naming/SOLID scores.
-    //
-    // All requests are sequential to avoid hitting API rate limits (429).
-    // ─────────────────────────────────────────────────────────────────────────────
-
-    const filesToReview = changedFiles.map((f) => ({
-      filePath: f.filePath,
-      content: f.content,
-    }));
-
-    // Build the full payload for the shallow oneshot scan
-    const HEADER = "Review the following code:\n\n";
-    const fullPayload =
-      HEADER +
-      filesToReview
-        .map((f) => `<file path="${f.filePath}">\n${f.content}\n</file>\n\n`)
-        .join("");
-
-    // Build small chunks for deep review
-    const deepChunks = this.buildBatches(filesToReview, CHUNK_CHAR_THRESHOLD);
-
     logDebug(
-      `Dual-mode review: 1 shallow oneshot + ${deepChunks.length} deep chunk(s).`,
+      `[timing] audit: ${(auditMs / 1000).toFixed(2)}s` +
+        ` (${secretFindings.length} secret(s) detected)`,
     );
 
-    // ── Step 7A: Shallow oneshot (global metrics, runs first) ─────────────────
-    const shallowStart = performance.now();
-    let shallowResult: ShallowReviewResult | null = null;
-    onProgress("[Oneshot] Global metrics scan...");
-    try {
-      shallowResult = await this.aiProvider.shallowReviewFull(fullPayload);
-      logDebug(
-        `Shallow oneshot complete: dup=${shallowResult.codeDuplicationPercentage}%, cc=${shallowResult.cyclomaticComplexity}, mi=${shallowResult.maintainabilityIndex}`,
-      );
-    } catch (err: any) {
-      logDebug(`Shallow oneshot failed: ${err?.message ?? err}`);
-    }
-    const shallowReviewMs = performance.now() - shallowStart;
+    // ── Step 6: AI Review (Split: Code & Infrastructure) ──────────────────────
+    const reviewStart = performance.now();
 
-    // ── Step 7B: Deep chunk pipeline (detailed findings, one-by-one) ──────────
-    const deepStart = performance.now();
-    const allNewFindings: ReviewFinding[] = [];
-    const chunkSubScores: AiSubScores[] = [];
-    let chunksSucceeded = 0;
+    // 1. Code Review Preparation
+    const codePayload = changedFiles
+      .map((f) => `<file path="${f.filePath}">\n${f.content}\n</file>`)
+      .join("\n\n");
 
-    for (let i = 0; i < deepChunks.length; i++) {
-      const progress = Math.round(((i + 1) / deepChunks.length) * 100);
-      onProgress(
-        `[${progress}%] Deep review chunk ${i + 1}/${deepChunks.length}...`,
-      );
+    const codeReviewRequest: ProjectReviewRequest = {
+      codePayload,
+      skillsContext,
+      feedbackSuffix,
+    };
 
-      try {
-        const result = await this.aiProvider.deepReviewChunk(deepChunks[i], {
-          skillsContext,
-          feedbackSuffix,
-        });
-
-        // Resolve accurate line numbers from original (non-minified) content
-        for (const finding of result.findings) {
-          const fileMatch = changedFiles.find(
-            (f) => f.filePath === finding.file,
-          );
-          if (fileMatch && finding.snippet) {
-            finding.line = this.resolveLineNumber(
-              fileMatch.originalContent,
-              finding.snippet,
-            );
-          }
-        }
-
-        allNewFindings.push(...result.findings);
-        chunkSubScores.push(result.subScores);
-        chunksSucceeded++;
-      } catch (err: any) {
-        logDebug(`Deep chunk ${i + 1} failed: ${err?.message ?? err}`);
+    // 2. Infrastructure Audit Preparation
+    const currentIacHashes: Record<string, string> = {};
+    const changedIacFiles: Record<string, string> = {};
+    for (const [name, content] of Object.entries(project.iacFiles)) {
+      const hash = crypto.createHash("sha256").update(content).digest("hex");
+      currentIacHashes[name] = hash;
+      if (previousState?.iacFileHashes?.[name] !== hash) {
+        changedIacFiles[name] = content;
       }
     }
 
-    if (chunksSucceeded === 0 && deepChunks.length > 0) {
-      throw new AllBatchesFailedError(
-        "Gemini API call failed for all chunks. Check your authentication and network.",
-      );
+    const currentManifestHashes: Record<string, string> = {};
+    const changedManifests: Record<string, string> = {};
+    for (const [name, content] of Object.entries(project.dependencyManifests)) {
+      const hash = crypto.createHash("sha256").update(content).digest("hex");
+      currentManifestHashes[name] = hash;
+      if (previousState?.manifestHashes?.[name] !== hash) {
+        changedManifests[name] = content;
+      }
     }
-    const deepReviewMs = performance.now() - deepStart;
 
-    // ── Step 8: Annotate findings with risk multipliers ───────────────────────
-    // (Risk multiplier is metadata for display; actual scoring is in ReportBuilder)
-    for (const finding of allNewFindings) {
-      finding.riskMultiplier = this.computeFileRisk(finding.file);
+    // Generate project tree (full paths, no content) as structural context for infra audit
+    const projectTree = codeFiles.map((f) => f.filePath).join("\n");
+
+    const infraReviewRequest: InfraReviewRequest = {
+      iacFiles: changedIacFiles,
+      dependencyManifests: changedManifests,
+      projectTree,
+    };
+
+    onProgress("Sending split payloads to Gemini 2.5 Flash...");
+    logDebug(
+      `reviewProject: ${changedFiles.length} code file(s) → ~${Math.ceil(codePayload.length / 4)} tokens`,
+    );
+    logDebug(
+      `reviewInfrastructure: ${Object.keys(changedIacFiles).length} IaC` +
+        ` + ${Object.keys(changedManifests).length} manifest(s) → ~${Math.ceil((JSON.stringify(changedIacFiles).length + JSON.stringify(changedManifests).length + projectTree.length) / 4)} tokens`,
+    );
+
+    // Call AI provider with two separate requests to avoid payload timeouts
+    const [codeReviewResult, infraReviewResult] = await Promise.all([
+      this.aiProvider.reviewProject(codeReviewRequest),
+      this.aiProvider.reviewInfrastructure(infraReviewRequest),
+    ]);
+
+    const reviewMs = performance.now() - reviewStart;
+    onProgress(
+      `Review complete — ${codeReviewResult.codeFindings.length} code finding(s), ${infraReviewResult.infraFindings.length} infra finding(s).`,
+    );
+
+    logDebug(
+      `[timing] review (split calls): ${(reviewMs / 1000).toFixed(2)}s` +
+        ` → ${codeReviewResult.codeFindings.length} code finding(s),` +
+        ` ${infraReviewResult.infraFindings.length} infra finding(s)` +
+        ` | SOLID=${codeReviewResult.subScores.solidPrinciplesScore ?? "—"}` +
+        ` naming=${codeReviewResult.subScores.namingConventionScore ?? "—"}` +
+        ` MI=${codeReviewResult.subScores.maintainabilityIndex ?? "—"}` +
+        ` CC=${codeReviewResult.subScores.cyclomaticComplexity ?? "—"}` +
+        ` dup=${codeReviewResult.subScores.codeDuplicationPercentage ?? "—"}%`,
+    );
+
+    // Merge results for the rest of the pipeline
+    const reviewResult = {
+      codeFindings: codeReviewResult.codeFindings,
+      infraFindings: infraReviewResult.infraFindings,
+      subScores: codeReviewResult.subScores,
+    };
+
+    // ── Step 7: Annotate findings with risk multipliers ───────────────────────
+    for (const finding of reviewResult.codeFindings) {
+      finding.riskMultiplier = this.getRiskMultiplier(finding.file);
+      // Resolve accurate line numbers from original (non-minified) content
+      const fileMatch = changedFiles.find((f) => f.filePath === finding.file);
+      if (fileMatch && finding.snippet) {
+        finding.line = this.resolveLineNumber(
+          fileMatch.originalContent,
+          finding.snippet,
+        );
+      }
     }
 
     // Merge new findings with carried-over cached findings
-    const allFindings: ReviewFinding[] = [...allNewFindings, ...oldFindings];
+    const allCodeFindings: ReviewFinding[] = [
+      ...reviewResult.codeFindings,
+      ...oldFindings,
+    ];
 
     // Filter confirmed false positives
-    const filteredFindings = allFindings.filter(
+    const filteredFindings = allCodeFindings.filter(
       (f) =>
         !this.feedbackManager.isFalsePositive(f.file, f.line, f.snippet ?? ""),
     );
 
-    // ── Step 9: Aggregate AI sub-scores (shallow + deep) ──────────────────────
-    const aiSubScores = this.aggregateSubScores(
-      chunkSubScores,
-      shallowResult,
-      previousState,
-    );
+    // Combine infra findings (AI + static auditors)
+    const allInfraFindings = [
+      ...reviewResult.infraFindings,
+      ...(combinedAuditResult.infraFindings ?? []),
+    ];
 
-    // ── Step 10: Generate executive summary ───────────────────────────────────
+    // ── Step 8: Generate executive summary ────────────────────────────────────
     const summaryStart = performance.now();
     onProgress("Generating Executive Summary...");
 
-    // Prime the report builder to calculate the score for the summary prompt
     this.reportBuilder.addAiFindings(filteredFindings);
     this.reportBuilder.addSecretResults(secretFindings);
     this.reportBuilder.addInfrastructureResults({
-      findings: infraFindings,
+      findings: allInfraFindings,
       isPublicFacing,
       scannedFiles: infraScannedFiles,
     });
-    this.reportBuilder.setAiScores(aiSubScores);
+    this.reportBuilder.setAiScores(reviewResult.subScores);
     const previewScore = this.reportBuilder.calculateFinalScore();
 
     const executiveSummary = await this.aiProvider.generateExecutiveSummary({
       overallScore: previewScore,
       totalCodeFindings: filteredFindings.length,
       totalSecrets: secretFindings.length,
-      totalInfraFindings: infraFindings.length,
+      totalInfraFindings: allInfraFindings.length,
       isPublicFacing,
       sampleFiles: codeFiles.slice(0, 10).map((f) => f.filePath),
       topHighFindings: filteredFindings
@@ -405,7 +413,7 @@ export class RunCodeReview {
         .map(
           (f) => `- [${f.file}:${f.line}] ${f.suggestion?.slice(0, 120) ?? ""}`,
         ),
-      topInfraFindings: infraFindings
+      topInfraFindings: allInfraFindings
         .filter((f) => f.severity === "critical" || f.severity === "high")
         .slice(0, 5)
         .map(
@@ -420,40 +428,48 @@ export class RunCodeReview {
 
     const finalScore = this.reportBuilder.calculateFinalScore();
     const summaryMs = performance.now() - summaryStart;
+    logDebug(`[timing] summary: ${(summaryMs / 1000).toFixed(2)}s`);
 
-    // ── Compute timing stats ─────────────────────────────────────────────────
+    // ── Step 9: Compute timing stats ──────────────────────────────────────────
     const totalMs = performance.now() - t0;
     const timingStats: TimingStats = {
       totalMs: Math.round(totalMs),
       scanMs: Math.round(scanMs),
       auditMs: Math.round(auditMs),
-      shallowReviewMs: Math.round(shallowReviewMs),
-      deepReviewMs: Math.round(deepReviewMs),
+      reviewMs: Math.round(reviewMs),
       summaryMs: Math.round(summaryMs),
-      deepChunkCount: deepChunks.length,
       timestamp: new Date().toISOString(),
     };
 
+    // ── Timing table (debug mode only) ────────────────────────────────────────
     logDebug(
-      `Timing: total=${(totalMs / 1000).toFixed(1)}s, scan=${(scanMs / 1000).toFixed(1)}s, audit=${(auditMs / 1000).toFixed(1)}s, ` +
-        `shallow=${(shallowReviewMs / 1000).toFixed(1)}s, deep=${(deepReviewMs / 1000).toFixed(1)}s (${deepChunks.length} chunks), ` +
-        `summary=${(summaryMs / 1000).toFixed(1)}s`,
+      "[timing] ─────────────────────────────────────────\n" +
+        `         scan    : ${(scanMs / 1000).toFixed(2)}s\n` +
+        `         audit   : ${(auditMs / 1000).toFixed(2)}s\n` +
+        `         review  : ${(reviewMs / 1000).toFixed(2)}s  ← single LLM call\n` +
+        `         summary : ${(summaryMs / 1000).toFixed(2)}s\n` +
+        `         ─────────────────────────────────────────\n` +
+        `         TOTAL   : ${(totalMs / 1000).toFixed(2)}s  |  score: ${finalScore}/100`,
     );
 
     this.reportBuilder.setTimingStats(timingStats);
-    // ── Step 11: Persist the cache ────────────────────────────────────────────
+
+    // ── Step 10: Persist the cache ────────────────────────────────────────────
     const cacheState: CacheState = {
       fileHashes: currentFileHashes,
+      iacFileHashes: currentIacHashes,
+      manifestHashes: currentManifestHashes,
       findings: filteredFindings,
       secretFindings,
-      infraFindings,
+      infraFindings: allInfraFindings,
       isPublicFacing,
       executiveSummary,
-      namingConventionScore: aiSubScores.namingConventionScore,
-      solidPrinciplesScore: aiSubScores.solidPrinciplesScore,
-      codeDuplicationPercentage: aiSubScores.codeDuplicationPercentage,
-      cyclomaticComplexity: aiSubScores.cyclomaticComplexity,
-      maintainabilityIndex: aiSubScores.maintainabilityIndex,
+      namingConventionScore: reviewResult.subScores.namingConventionScore,
+      solidPrinciplesScore: reviewResult.subScores.solidPrinciplesScore,
+      codeDuplicationPercentage:
+        reviewResult.subScores.codeDuplicationPercentage,
+      cyclomaticComplexity: reviewResult.subScores.cyclomaticComplexity,
+      maintainabilityIndex: reviewResult.subScores.maintainabilityIndex,
       timingStats,
     };
 
@@ -467,15 +483,15 @@ export class RunCodeReview {
       logDebug(`Could not save cache to ${statePath}: ${err.message}`);
     }
 
-    // ── Step 12: Assemble the final ProjectReport ─────────────────────────────
+    // ── Step 11: Assemble the final ProjectReport ─────────────────────────────
     const report: ProjectReport = {
       codeFindings: filteredFindings,
       secretFindings,
-      infraFindings,
+      infraFindings: allInfraFindings,
       isPublicFacing,
       infraScannedFiles,
       executiveSummary,
-      aiSubScores,
+      aiSubScores: reviewResult.subScores,
       fileHashes: currentFileHashes,
       timingStats,
     };
@@ -485,34 +501,6 @@ export class RunCodeReview {
   }
 
   // ── Private helpers ───────────────────────────────────────────────────────
-
-  private buildBatches(
-    files: Array<{ filePath: string; content: string }>,
-    charLimit: number = CHUNK_CHAR_THRESHOLD,
-  ): CodeReviewBatch[] {
-    const batches: CodeReviewBatch[] = [];
-    const HEADER = "Review the following code:\n\n";
-    let current = HEADER;
-    let currentFiles: string[] = [];
-
-    for (const f of files) {
-      const fileXml = `<file path="${f.filePath}">\n${f.content}\n</file>\n\n`;
-      if (current.length + fileXml.length > charLimit && current !== HEADER) {
-        batches.push({ payload: current, files: currentFiles });
-        current = HEADER + fileXml;
-        currentFiles = [f.filePath];
-      } else {
-        current += fileXml;
-        currentFiles.push(f.filePath);
-      }
-    }
-
-    if (current !== HEADER) {
-      batches.push({ payload: current, files: currentFiles });
-    }
-
-    return batches;
-  }
 
   private mergeAuditResults(
     base: AuditResult,
@@ -539,59 +527,8 @@ export class RunCodeReview {
     };
   }
 
-  private aggregateSubScores(
-    chunkScores: AiSubScores[],
-    shallowResult: ShallowReviewResult | null,
-    previousState: CacheState | null,
-  ): AiSubScores {
-    // Deep chunk scores: average naming + SOLID across all chunks
-    const n = chunkScores.length;
-    let namingConventionScore: number | undefined;
-    let solidPrinciplesScore: number | undefined;
-
-    if (n > 0) {
-      const sumNaming = chunkScores.reduce(
-        (acc, s) => acc + ((s.namingConventionScore as number) ?? 0),
-        0,
-      );
-      const sumSolid = chunkScores.reduce(
-        (acc, s) => acc + ((s.solidPrinciplesScore as number) ?? 0),
-        0,
-      );
-      namingConventionScore = Math.round(sumNaming / n);
-      solidPrinciplesScore = Math.round(sumSolid / n);
-    } else {
-      namingConventionScore = previousState?.namingConventionScore;
-      solidPrinciplesScore = previousState?.solidPrinciplesScore;
-    }
-
-    // Shallow result provides global metrics; fall back to cache if unavailable
-    const codeDuplicationPercentage =
-      shallowResult?.codeDuplicationPercentage ??
-      previousState?.codeDuplicationPercentage ??
-      0;
-    const cyclomaticComplexity =
-      shallowResult?.cyclomaticComplexity ??
-      previousState?.cyclomaticComplexity ??
-      0;
-    const maintainabilityIndex =
-      shallowResult?.maintainabilityIndex ??
-      previousState?.maintainabilityIndex ??
-      0;
-
-    return {
-      namingConventionScore,
-      solidPrinciplesScore,
-      codeDuplicationPercentage,
-      cyclomaticComplexity,
-      maintainabilityIndex,
-    };
-  }
-
   /**
    * Resolves the line number for a snippet using whitespace-normalised matching.
-   * This pure function replaces the old `findLineNumberToMatchSnippet` call
-   * in reviewer.ts.
    */
   private resolveLineNumber(originalContent: string, snippet: string): number {
     if (!snippet || typeof snippet !== "string") return 1;
@@ -615,10 +552,9 @@ export class RunCodeReview {
 
   /**
    * Simplified path-based risk multiplier.
-   * The full implementation lives in security-scanner.ts (infrastructure).
-   * This version keeps the use case self-contained for pure logic testing.
+   * Public-facing files get a higher multiplier to amplify score penalties.
    */
-  private computeFileRisk(filePath: string): number {
+  private getRiskMultiplier(filePath: string): number {
     const parts = filePath.replace(/\\/g, "/").toLowerCase().split("/");
     const PUBLIC_FACING = [
       "controller",
@@ -653,11 +589,12 @@ export class RunCodeReview {
   ): ProjectReport {
     return {
       codeFindings: (state.findings as ReviewFinding[]) ?? [],
-      secretFindings: (state.secretFindings as any[]) ?? [],
-      infraFindings: (state.infraFindings as any[]) ?? [],
+      secretFindings: (state.secretFindings as SecretFindingEntity[]) ?? [],
+      infraFindings: (state.infraFindings as InfraFindingEntity[]) ?? [],
       isPublicFacing: state.isPublicFacing ?? false,
       infraScannedFiles: [],
-      executiveSummary: state.executiveSummary as any,
+      executiveSummary:
+        state.executiveSummary as ProjectReport["executiveSummary"],
       aiSubScores: {
         namingConventionScore: state.namingConventionScore,
         solidPrinciplesScore: state.solidPrinciplesScore,
@@ -666,6 +603,7 @@ export class RunCodeReview {
         maintainabilityIndex: state.maintainabilityIndex,
       },
       fileHashes: currentFileHashes,
+      timingStats: state.timingStats,
     };
   }
 }
