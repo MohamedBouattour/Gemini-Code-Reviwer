@@ -1,47 +1,76 @@
 // Copyright 2026 Google LLC
 
 /**
- * AiCallLogger — debug persistence layer for AI calls.
+ * AiCallLogger — persists every AI call payload + response to disk.
  *
- * When debug mode is enabled, every call made through GeminiProvider is
- * persisted as a JSON file under `.gemini-code-reviewer/` in the CWD.
+ * ## Always-on (not gated by --debug)
  *
- * ## File naming
- *   .gemini-code-reviewer/<ISO-timestamp>_<callName>.json
- *   Example: .gemini-code-reviewer/2026-02-28T05-01-00-000Z_auditInfra.json
+ *   Call logs are OPERATIONAL artifacts, not debug artifacts.
+ *   They are written on every run so you can always inspect:
+ *     - exact prompt sent to Gemini
+ *     - exact JSON response received
+ *     - per-call wall-clock time (to diagnose slow/retried calls)
+ *     - estimated token count
+ *     - how many retries were needed
  *
- * ## File structure
+ * ## Output location
+ *   <baseDir>/gemini-code-reviewer/ai-calls/<ISO-timestamp>_<callName>.json
+ *
+ *   Example:
+ *     gemini-code-reviewer/ai-calls/2026-02-28T05-01-00-000Z_auditInfra.json
+ *     gemini-code-reviewer/ai-calls/2026-02-28T05-01-03-412Z_deepReview.json
+ *     gemini-code-reviewer/ai-calls/2026-02-28T05-01-05-891Z_generateExecutiveSummary.json
+ *
+ * ## Record shape
  * ```json
  * {
- *   "call":        "auditInfra",
- *   "model":       "gemini-2.5-flash",
- *   "timestamp":   "2026-02-28T05:01:00.000Z",
- *   "durationMs":  1243,
- *   "estimatedInputTokens": 4200,
- *   "payload":     { ...full request body sent to Gemini... },
- *   "response":    { ...full parsed JSON response... }
+ *   "call":                  "auditInfra",
+ *   "model":                 "gemini-2.5-flash",
+ *   "timestamp":             "2026-02-28T05:01:00.000Z",
+ *   "durationMs":            4312,
+ *   "retryCount":            0,
+ *   "estimatedInputTokens":  820,
+ *   "payload":               { ...full request body... },
+ *   "response":              { ...full parsed JSON response... }
  * }
  * ```
  *
- * Files are written fire-and-forget (errors are swallowed and logged via
- * logDebug so they never break the main review flow).
+ * Files are written fire-and-forget: errors are swallowed and emitted as
+ * logDebug lines so they never block or crash the main review flow.
+ *
+ * ## Old behaviour (removed)
+ *   Previously `AiCallLogger` was gated by a `debug: boolean` flag and wrote
+ *   nothing unless `--debug` was passed. That made it useless for diagnosing
+ *   production timing problems. The flag has been removed.
  */
 
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import type { LogDebugFn } from "../../shared/utils/Logger.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
 // ─────────────────────────────────────────────────────────────────────────────
 
 export interface AiCallRecord {
+  /** IAiProvider method name (e.g. "auditInfra", "deepReview"). */
   call: string;
+  /** Gemini model identifier used for this call. */
   model: string;
+  /** ISO 8601 timestamp when the call completed. */
   timestamp: string;
+  /** Wall-clock duration from first fetch() attempt to successful parse, ms. */
   durationMs: number;
+  /**
+   * Number of 429 retries consumed before success.
+   * 0 = succeeded on first attempt.
+   * > 0 = how many times the request was retried after rate-limit.
+   */
+  retryCount: number;
+  /** Rough token estimate: prompt chars ÷ 4. */
   estimatedInputTokens: number;
+  /** Full request body sent to the Code Assist API. */
   payload: unknown;
+  /** Full parsed JSON response from Gemini. */
   response: unknown;
 }
 
@@ -49,28 +78,31 @@ export interface AiCallRecord {
 // Constants
 // ─────────────────────────────────────────────────────────────────────────────
 
-export const AI_CALL_LOG_DIR = ".gemini-code-reviewer";
+/** Subdirectory under gemini-code-reviewer/ where call logs live. */
+export const AI_CALL_LOG_SUBDIR = "ai-calls";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // AiCallLogger
 // ─────────────────────────────────────────────────────────────────────────────
 
 export class AiCallLogger {
-  private readonly enabled: boolean;
   private readonly logDir: string;
-  private readonly logDebug: LogDebugFn;
+  private readonly logDebug: (msg: string) => void;
 
-  constructor(enabled: boolean, logDebug: LogDebugFn, baseDir = process.cwd()) {
-    this.enabled = enabled;
-    this.logDir = path.join(baseDir, AI_CALL_LOG_DIR);
+  /**
+   * @param outputDir  The review output directory (e.g. `<baseDir>/gemini-code-reviewer`).
+   *                   Call logs are written to `<outputDir>/ai-calls/`.
+   * @param logDebug   Debug logger — used only for write-failure warnings.
+   */
+  constructor(outputDir: string, logDebug: (msg: string) => void) {
+    this.logDir = path.join(outputDir, AI_CALL_LOG_SUBDIR);
     this.logDebug = logDebug;
   }
 
   /**
-   * Persist one AI call record to disk.
+   * Persist one AI call record to `<outputDir>/ai-calls/<ts>_<callName>.json`.
    *
-   * Fire-and-forget: never throws, never blocks the caller.
-   * Filename format: <ISO-timestamp-safe>_<callName>.json
+   * Always writes — fire-and-forget, never throws.
    */
   persist(
     callName: string,
@@ -79,11 +111,9 @@ export class AiCallLogger {
     response: unknown,
     durationMs: number,
     estimatedInputTokens: number,
+    retryCount = 0,
   ): void {
-    if (!this.enabled) return;
-
     const timestamp = new Date().toISOString();
-    // Make ISO timestamp safe for filenames: replace `:` and `.` with `-`
     const safeTs = timestamp.replace(/[:.]/g, "-");
     const filename = `${safeTs}_${callName}.json`;
     const filePath = path.join(this.logDir, filename);
@@ -93,6 +123,7 @@ export class AiCallLogger {
       model,
       timestamp,
       durationMs,
+      retryCount,
       estimatedInputTokens,
       payload,
       response,
@@ -104,14 +135,12 @@ export class AiCallLogger {
     });
 
     this.logDebug(
-      `[AiCallLogger] Persisting ${callName} → ${path.relative(process.cwd(), filePath)}`,
+      `[AiCallLogger] → ${path.relative(process.cwd(), filePath)}` +
+        ` (${durationMs}ms, ~${estimatedInputTokens} tokens, retries=${retryCount})`,
     );
   }
 
-  private async writeRecord(
-    filePath: string,
-    record: AiCallRecord,
-  ): Promise<void> {
+  private async writeRecord(filePath: string, record: AiCallRecord): Promise<void> {
     await fs.mkdir(this.logDir, { recursive: true });
     await fs.writeFile(filePath, JSON.stringify(record, null, 2), "utf-8");
   }
