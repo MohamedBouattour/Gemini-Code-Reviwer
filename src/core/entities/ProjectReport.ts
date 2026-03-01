@@ -59,7 +59,8 @@ export interface TimingStats {
   totalMs: number;
   scanMs: number;
   auditMs: number;
-  reviewMs: number;
+  auditInfraMs?: number;
+  deepReviewMs?: number;
   summaryMs: number;
   timestamp: string;
 }

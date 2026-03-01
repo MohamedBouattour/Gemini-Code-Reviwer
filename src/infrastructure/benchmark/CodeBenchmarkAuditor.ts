@@ -39,7 +39,8 @@ import { DuplicationAnalyzer } from "./DuplicationAnalyzer.js";
 import { NamingConventionAnalyzer } from "./NamingConventionAnalyzer.js";
 
 export class CodeBenchmarkAuditor implements IProjectAuditor {
-  readonly name = "Code Quality Benchmark (local — complexity, duplication, naming)";
+  readonly name =
+    "Code Quality Benchmark (local — complexity, duplication, naming)";
 
   private readonly complexityAnalyzer = new ComplexityAnalyzer();
   private readonly duplicationAnalyzer = new DuplicationAnalyzer();
@@ -110,6 +111,13 @@ export class CodeBenchmarkAuditor implements IProjectAuditor {
       infraFindings: [],
       scannedFiles: codeFiles.map((f) => f.filePath),
       benchmarks,
+      benchmarkScores: {
+        namingConventionScore: naming.score,
+        codeDuplicationPercentage: duplication.duplicationPercentage,
+        cyclomaticComplexity: complexity.averageComplexity,
+        maintainabilityIndex: complexity.averageComplexity,
+        solidPrinciplesScore: undefined,
+      },
     };
   }
 }

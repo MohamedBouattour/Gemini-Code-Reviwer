@@ -12,7 +12,10 @@
 
 import type { CodeSegment } from "../entities/CodeSegment.js";
 import type { ReviewFinding } from "../entities/ReviewFinding.js";
-import type { SecretFindingEntity, InfraFindingEntity } from "../entities/ProjectReport.js";
+import type {
+  SecretFindingEntity,
+  InfraFindingEntity,
+} from "../entities/ProjectReport.js";
 import type { CodeBenchmarkResults } from "../entities/CodeBenchmarkResults.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -40,15 +43,10 @@ export interface AuditResult {
   codeFindings?: ReviewFinding[];
   secretFindings?: SecretFindingEntity[];
   infraFindings?: InfraFindingEntity[];
-  /** Paths of files scanned (for the report’s scanned-files list). */
   scannedFiles?: string[];
-  /** Override public-facing status if the auditor can determine it. */
   isPublicFacing?: boolean;
-  /**
-   * Local benchmark metrics produced by CodeBenchmarkAuditor.
-   * Merged into ProjectReport.localBenchmarks by RunCodeReview.
-   */
   benchmarks?: CodeBenchmarkResults;
+  benchmarkScores?: import("../entities/ProjectReport.js").AiSubScores;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

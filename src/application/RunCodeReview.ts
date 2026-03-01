@@ -113,7 +113,12 @@ export class RunCodeReview {
   ) {}
 
   async execute(input: RunCodeReviewInput): Promise<RunCodeReviewOutput> {
-    const { baseDir, preloadedProject, logDebug, onProgress = () => {} } = input;
+    const {
+      baseDir,
+      preloadedProject,
+      logDebug,
+      onProgress = () => {},
+    } = input;
     const t0 = performance.now();
 
     // ── Step 1: Scan ─────────────────────────────────────────────────────────
@@ -139,8 +144,12 @@ export class RunCodeReview {
     const statePath = path.join(outputDir, ".gemini-code-reviewer.json");
     let previousState: CacheState | null = null;
     try {
-      previousState = JSON.parse(await nodefs.readFile(statePath, "utf-8")) as CacheState;
-    } catch { /* no cache yet */ }
+      previousState = JSON.parse(
+        await nodefs.readFile(statePath, "utf-8"),
+      ) as CacheState;
+    } catch {
+      /* no cache yet */
+    }
 
     const currentFileHashes: Record<string, string> = {};
     const changedFiles = codeFiles.filter((f) => {
@@ -161,12 +170,17 @@ export class RunCodeReview {
 
     if (changedFiles.length === 0 && previousState) {
       logDebug("No file changes detected — returning cached report.");
-      return { report: this.buildReportFromCache(previousState, currentFileHashes), outputDir };
+      return {
+        report: this.buildReportFromCache(previousState, currentFileHashes),
+        outputDir,
+      };
     }
 
     logDebug(`Changed files: ${changedFiles.length}`);
     const scanMs = performance.now() - scanStart;
-    logDebug(`[timing] scan: ${(scanMs / 1000).toFixed(2)}s (${codeFiles.length} files, ${changedFiles.length} changed)`);
+    logDebug(
+      `[timing] scan: ${(scanMs / 1000).toFixed(2)}s (${codeFiles.length} files, ${changedFiles.length} changed)`,
+    );
 
     // ── Step 4: Skills context ────────────────────────────────────────────────
     onProgress("Loading skills context...");
@@ -204,7 +218,10 @@ export class RunCodeReview {
       logDebug(`Running auditor: ${auditor.name}`);
       try {
         const result = await auditor.audit(auditContext);
-        combinedAuditResult = this.mergeAuditResults(combinedAuditResult, result);
+        combinedAuditResult = this.mergeAuditResults(
+          combinedAuditResult,
+          result,
+        );
       } catch (e: any) {
         logDebug(`Auditor "${auditor.name}" failed: ${e.message}`);
       }
@@ -212,7 +229,8 @@ export class RunCodeReview {
 
     const secretFindings = combinedAuditResult.secretFindings ?? [];
     const infraScannedFiles = combinedAuditResult.scannedFiles ?? [];
-    const isPublicFacing = combinedAuditResult.isPublicFacing ?? project.isPublicFacing;
+    const isPublicFacing =
+      combinedAuditResult.isPublicFacing ?? project.isPublicFacing;
     const auditMs = performance.now() - auditStart;
     logDebug(
       `[timing] audit+review: ${(auditMs / 1000).toFixed(2)}s` +
@@ -227,13 +245,20 @@ export class RunCodeReview {
       finding.riskMultiplier = this.getRiskMultiplier(finding.file);
       const fileMatch = changedFiles.find((f) => f.filePath === finding.file);
       if (fileMatch && finding.snippet) {
-        finding.line = this.resolveLineNumber(fileMatch.originalContent, finding.snippet);
+        finding.line = this.resolveLineNumber(
+          fileMatch.originalContent,
+          finding.snippet,
+        );
       }
     }
 
-    const allCodeFindings: ReviewFinding[] = [...newCodeFindings, ...oldFindings];
+    const allCodeFindings: ReviewFinding[] = [
+      ...newCodeFindings,
+      ...oldFindings,
+    ];
     const filteredFindings = allCodeFindings.filter(
-      (f) => !this.feedbackManager.isFalsePositive(f.file, f.line, f.snippet ?? ""),
+      (f) =>
+        !this.feedbackManager.isFalsePositive(f.file, f.line, f.snippet ?? ""),
     );
     const allInfraFindings: InfraFindingEntity[] = [
       ...(combinedAuditResult.infraFindings ?? []),
@@ -252,7 +277,7 @@ export class RunCodeReview {
     });
     // subScores are no longer available from the new pipeline (deepReview doesn't emit them)
     // They could be added back to DeepReviewResult in a future iteration.
-    this.reportBuilder.setAiScores({});
+    this.reportBuilder.setAiScores(combinedAuditResult.benchmarkScores ?? {});
     const previewScore = this.reportBuilder.calculateFinalScore();
 
     const executiveSummary = await this.aiProvider.generateExecutiveSummary({
@@ -265,14 +290,20 @@ export class RunCodeReview {
       topHighFindings: filteredFindings
         .filter((f) => f.priority === "high")
         .slice(0, 10)
-        .map((f) => `- [${f.file}:${f.line}] ${f.suggestion?.slice(0, 120) ?? ""}`),
+        .map(
+          (f) => `- [${f.file}:${f.line}] ${f.suggestion?.slice(0, 120) ?? ""}`,
+        ),
       topInfraFindings: allInfraFindings
         .filter((f) => f.severity === "critical" || f.severity === "high")
         .slice(0, 5)
-        .map((f) => `- [${f.file}] ${f.title}: ${f.description?.slice(0, 100) ?? ""}`),
+        .map(
+          (f) =>
+            `- [${f.file}] ${f.title}: ${f.description?.slice(0, 100) ?? ""}`,
+        ),
     });
 
-    if (executiveSummary) this.reportBuilder.setExecutiveSummary(executiveSummary);
+    if (executiveSummary)
+      this.reportBuilder.setExecutiveSummary(executiveSummary);
 
     const finalScore = this.reportBuilder.calculateFinalScore();
     const summaryMs = performance.now() - summaryStart;
@@ -284,7 +315,7 @@ export class RunCodeReview {
       totalMs: Math.round(totalMs),
       scanMs: Math.round(scanMs),
       auditMs: Math.round(auditMs),
-      reviewMs: Math.round(auditMs), // auditMs now includes all AI review time
+
       summaryMs: Math.round(summaryMs),
       timestamp: new Date().toISOString(),
     };
@@ -303,11 +334,17 @@ export class RunCodeReview {
     // ── Step 9: Persist cache ─────────────────────────────────────────────────
     const currentIacHashes: Record<string, string> = {};
     for (const [name, content] of Object.entries(project.iacFiles)) {
-      currentIacHashes[name] = crypto.createHash("sha256").update(content).digest("hex");
+      currentIacHashes[name] = crypto
+        .createHash("sha256")
+        .update(content)
+        .digest("hex");
     }
     const currentManifestHashes: Record<string, string> = {};
     for (const [name, content] of Object.entries(project.dependencyManifests)) {
-      currentManifestHashes[name] = crypto.createHash("sha256").update(content).digest("hex");
+      currentManifestHashes[name] = crypto
+        .createHash("sha256")
+        .update(content)
+        .digest("hex");
     }
 
     const cacheState: CacheState = {
@@ -323,7 +360,11 @@ export class RunCodeReview {
     };
 
     try {
-      await nodefs.writeFile(statePath, JSON.stringify(cacheState, null, 2), "utf-8");
+      await nodefs.writeFile(
+        statePath,
+        JSON.stringify(cacheState, null, 2),
+        "utf-8",
+      );
     } catch (err: any) {
       logDebug(`Could not save cache: ${err.message}`);
     }
@@ -347,13 +388,31 @@ export class RunCodeReview {
 
   // ── Private helpers ───────────────────────────────────────────────────────
 
-  private mergeAuditResults(base: AuditResult, addition: AuditResult): AuditResult {
+  private mergeAuditResults(
+    base: AuditResult,
+    addition: AuditResult,
+  ): AuditResult {
     return {
-      codeFindings: [...(base.codeFindings ?? []), ...(addition.codeFindings ?? [])],
-      secretFindings: [...(base.secretFindings ?? []), ...(addition.secretFindings ?? [])],
-      infraFindings: [...(base.infraFindings ?? []), ...(addition.infraFindings ?? [])],
-      scannedFiles: [...(base.scannedFiles ?? []), ...(addition.scannedFiles ?? [])],
+      codeFindings: [
+        ...(base.codeFindings ?? []),
+        ...(addition.codeFindings ?? []),
+      ],
+      secretFindings: [
+        ...(base.secretFindings ?? []),
+        ...(addition.secretFindings ?? []),
+      ],
+      infraFindings: [
+        ...(base.infraFindings ?? []),
+        ...(addition.infraFindings ?? []),
+      ],
+      scannedFiles: [
+        ...(base.scannedFiles ?? []),
+        ...(addition.scannedFiles ?? []),
+      ],
       isPublicFacing: addition.isPublicFacing ?? base.isPublicFacing,
+      benchmarkScores: addition.benchmarkScores
+        ? { ...(base.benchmarkScores ?? {}), ...addition.benchmarkScores }
+        : base.benchmarkScores,
     };
   }
 
@@ -375,8 +434,25 @@ export class RunCodeReview {
 
   private getRiskMultiplier(filePath: string): number {
     const parts = filePath.replace(/\\/g, "/").toLowerCase().split("/");
-    const PUBLIC_FACING = ["controller", "controllers", "route", "routes", "api", "endpoint", "handler", "resolver", "gateway"];
-    const BUSINESS = ["service", "services", "manager", "usecase", "domain", "repository"];
+    const PUBLIC_FACING = [
+      "controller",
+      "controllers",
+      "route",
+      "routes",
+      "api",
+      "endpoint",
+      "handler",
+      "resolver",
+      "gateway",
+    ];
+    const BUSINESS = [
+      "service",
+      "services",
+      "manager",
+      "usecase",
+      "domain",
+      "repository",
+    ];
     const TEST = ["spec", "test", "__tests__"];
     if (TEST.some((s) => parts.includes(s))) return 0.3;
     if (PUBLIC_FACING.some((s) => parts.includes(s))) return 2.0;
@@ -394,7 +470,8 @@ export class RunCodeReview {
       infraFindings: (state.infraFindings as InfraFindingEntity[]) ?? [],
       isPublicFacing: state.isPublicFacing ?? false,
       infraScannedFiles: [],
-      executiveSummary: state.executiveSummary as ProjectReport["executiveSummary"],
+      executiveSummary:
+        state.executiveSummary as ProjectReport["executiveSummary"],
       aiSubScores: {},
       fileHashes: currentFileHashes,
       timingStats: state.timingStats,

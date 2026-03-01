@@ -58,7 +58,6 @@ import type { InfraFindingEntity } from "../../core/entities/ProjectReport.js";
 const DEEP_REVIEW_WEIGHT_THRESHOLD = 40;
 
 /** Pause between Call 1 and Call 2 to avoid RPM quota 429s. */
-const INTER_CALL_STAGGER_MS = 2_000;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -69,20 +68,24 @@ function sleep(ms: number): Promise<void> {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export class InfraAuditorAdapter implements IProjectAuditor {
-  readonly name = "Infrastructure & Dependency Audit (IaC/SCA + Smart File Scoring)";
+  readonly name =
+    "Infrastructure & Dependency Audit (IaC/SCA + Smart File Scoring)";
 
   constructor(private readonly aiProvider: IAiProvider) {}
 
   async audit(context: AuditContext): Promise<AuditResult> {
-    const { codeFiles, iacFiles, dependencyManifests, logDebug = () => {} } = context;
+    const {
+      codeFiles,
+      iacFiles,
+      dependencyManifests,
+      logDebug = () => {},
+    } = context;
 
     // ── Call 1: auditInfra ───────────────────────────────────────────────────
     // Build the file-tree manifest (metadata only, NO source content).
     const fileTree = codeFiles.map((f) => ({
       path: f.filePath,
-      extension: f.filePath.includes(".")
-        ? f.filePath.split(".").pop()!
-        : "",
+      extension: f.filePath.includes(".") ? f.filePath.split(".").pop()! : "",
       bytes: Buffer.byteLength(f.originalContent, "utf-8"),
       lines: f.originalContent.split("\n").length,
     }));
@@ -99,6 +102,7 @@ export class InfraAuditorAdapter implements IProjectAuditor {
       `[InfraAuditorAdapter] Call 1 · auditInfra: ${fileTree.length} files in manifest.`,
     );
 
+    const callOneStart = performance.now();
     const auditResult = await this.aiProvider.auditInfra(infraAuditRequest);
 
     // ── Select files for deep review ─────────────────────────────────────────
@@ -113,7 +117,9 @@ export class InfraAuditorAdapter implements IProjectAuditor {
     );
 
     if (selectedFiles.length === 0) {
-      logDebug(`[InfraAuditorAdapter] No files above threshold — skipping deep review.`);
+      logDebug(
+        `[InfraAuditorAdapter] No files above threshold — skipping deep review.`,
+      );
       return {
         codeFindings: [],
         infraFindings: this.extractInfraFindings(auditResult),
@@ -123,11 +129,13 @@ export class InfraAuditorAdapter implements IProjectAuditor {
       };
     }
 
-    // ── Stagger before Call 2 ────────────────────────────────────────────────
-    logDebug(
-      `[InfraAuditorAdapter] Staggering ${INTER_CALL_STAGGER_MS}ms before Call 2 · deepReview…`,
-    );
-    await sleep(INTER_CALL_STAGGER_MS);
+    const auditInfraDurationMs = performance.now() - callOneStart;
+    if (auditInfraDurationMs < 3_000) {
+      logDebug(
+        `[InfraAuditorAdapter] Micro-stagger 300ms (Call 1 done in ${Math.round(auditInfraDurationMs)}ms)…`,
+      );
+      await sleep(300);
+    }
 
     // ── Build deep review payloads ───────────────────────────────────────────
     const selectedPaths = new Set(selectedFiles.map((f) => f.path));
@@ -228,7 +236,8 @@ export class InfraAuditorAdapter implements IProjectAuditor {
       category: "other" as const,
       title: `Ignored pattern detected: ${pattern}`,
       description: `The file pattern "${pattern}" was flagged by the infra audit as typically non-reviewable.`,
-      remediation: "Verify this file does not contain sensitive logic or secrets.",
+      remediation:
+        "Verify this file does not contain sensitive logic or secrets.",
       severity: "low" as const,
     }));
   }
@@ -244,8 +253,7 @@ export class InfraAuditorAdapter implements IProjectAuditor {
     selectedPaths: Set<string>,
   ): Record<string, string> {
     const result: Record<string, string> = {};
-    const importRegex =
-      /(?:import|require)\s*(?:[^'"]*['"])([.][^'"]+)['"]/g;
+    const importRegex = /(?:import|require)\s*(?:[^'"]*['"])([.][^'"]+)['"]/g;
     const MAX_IMPORTS = 10;
 
     for (const sf of selectedFiles) {
@@ -270,7 +278,9 @@ export class InfraAuditorAdapter implements IProjectAuditor {
 
         for (const candidate of candidates) {
           const resolved = allCodeFiles.find(
-            (f) => f.filePath === candidate || f.filePath === candidate.replace(/^\.\//,""),
+            (f) =>
+              f.filePath === candidate ||
+              f.filePath === candidate.replace(/^\.\//, ""),
           );
           if (
             resolved &&

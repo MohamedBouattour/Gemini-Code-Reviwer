@@ -518,18 +518,21 @@ function renderCodeFindings(
 }
 
 function renderTimingStats(stats: TimingStats): string {
-  const fmt = (ms: number) => {
-    if (ms < 1000) return `${ms}ms`;
-    return `${(ms / 1000).toFixed(1)}s`;
-  };
+  const fmt = (ms: number) => `${(ms / 1000).toFixed(1)}s`;
 
   let out = "## ⏱️ Pipeline Timing\n\n";
   out += "| Phase | Duration |\n|:---|---:|\n";
-  out += `| File scan + hashing | ${fmt(stats.scanMs)} |\n`;
-  out += `| Auditors (secrets) | ${fmt(stats.auditMs)} |\n`;
-  out += `| AI review (code + infra, single call) | ${fmt(stats.reviewMs)} |\n`;
-  out += `| Executive summary | ${fmt(stats.summaryMs)} |\n`;
-  out += `| **Total** | **${fmt(stats.totalMs)}** |\n`;
+  out += `| 🔍 File scan + hashing      | ${fmt(stats.scanMs)} |\n`;
+
+  if (stats.auditInfraMs !== undefined && stats.deepReviewMs !== undefined) {
+    out += `| 🤖 auditInfra (Call 1)      | ${fmt(stats.auditInfraMs)} |\n`;
+    out += `| 🤖 deepReview  (Call 2)     | ${fmt(stats.deepReviewMs)} |\n`;
+  } else {
+    out += `| 🤖 AI audit + deep review   | ${fmt(stats.auditMs)} |\n`;
+  }
+
+  out += `| 📝 Executive summary        | ${fmt(stats.summaryMs)} |\n`;
+  out += `| **⏳ Total**                 | **${fmt(stats.totalMs)}** |\n`;
   out += "\n";
   out += `_Reviewed on ${stats.timestamp}_\n\n`;
   return out;
