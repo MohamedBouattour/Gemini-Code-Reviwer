@@ -31,6 +31,7 @@
  * practice (log strings, i18n, markdown template literals, emoji prefixes).
  */
 
+import { LanguageStrategyManager } from "../analysis/languages/LanguageStrategyManager.js";
 import type {
   IProjectAuditor,
   AuditContext,
@@ -47,7 +48,7 @@ const ENTROPY_MIN_LEN = 20;
 const ENTROPY_MAX_LEN = 200;
 
 /** Gate 2: minimum fraction of printable ASCII chars (0x20–0x7E) */
-const ENTROPY_MIN_ASCII_RATIO = 0.70;
+const ENTROPY_MIN_ASCII_RATIO = 0.7;
 
 /** Gate 4: minimum entropy score (computed on ASCII chars only) */
 const ENTROPY_THRESHOLD = 4.8;
@@ -125,9 +126,9 @@ const EXCLUSION_PATTERNS: RegExp[] = [
 
   // File / import paths (relative or absolute)
   /^[.]{0,2}\//,
-  /^[A-Za-z]:\\/,                    // Windows absolute path C:\
-  /^@[a-z0-9-]+\/[a-z0-9-]+/i,       // npm scope e.g. @angular/core
-  /^[\w.\-]+\/[\w.\-/]+$/,            // bare path segments
+  /^[A-Za-z]:\\/, // Windows absolute path C:\
+  /^@[a-z0-9-]+\/[a-z0-9-]+/i, // npm scope e.g. @angular/core
+  /^[\w.\-]+\/[\w.\-/]+$/, // bare path segments
 
   // Hex colours
   /^#[0-9A-Fa-f]{3,8}$/,
@@ -152,14 +153,14 @@ const EXCLUSION_PATTERNS: RegExp[] = [
   /^cloudcode-/i,
 
   // CSS / SVG content
-  /^[Mm]\s*[\d.]+\s*[,\s]/,          // SVG path "M 10,20"
+  /^[Mm]\s*[\d.]+\s*[,\s]/, // SVG path "M 10,20"
   /^rgba?\(/i,
   /^hsl\(/i,
 
   // Markdown / template content heuristic:
   // If the string contains a full word (4+ alpha chars) it's likely prose
   // Real secrets rarely contain dictionary words
-  /[a-zA-Z]{4,}\s+[a-zA-Z]{4,}/,     // two words separated by space
+  /[a-zA-Z]{4,}\s+[a-zA-Z]{4,}/, // two words separated by space
 
   // Regex-like patterns (often used in source code as string constants)
   /[\^$|()\[\]{}?*+\\]{3,}/,
@@ -193,7 +194,10 @@ export class StaticSecurityAuditor implements IProjectAuditor {
         rule.pattern.lastIndex = 0;
         let match: RegExpExecArray | null;
         while ((match = rule.pattern.exec(file.originalContent)) !== null) {
-          const lineNumber = this.findLineNumber(file.originalContent, match.index);
+          const lineNumber = this.findLineNumber(
+            file.originalContent,
+            match.index,
+          );
           secretFindings.push({
             file: file.filePath,
             line: lineNumber,
@@ -207,7 +211,10 @@ export class StaticSecurityAuditor implements IProjectAuditor {
       }
 
       // — Method 2: Entropy scan (five-gate filter) —
-      const stringLiterals = this.extractStringLiterals(file.originalContent);
+      const stringLiterals = this.extractStringLiterals(
+        file.filePath,
+        file.originalContent,
+      );
       for (const literal of stringLiterals) {
         if (this.isHighEntropySecret(literal.value)) {
           secretFindings.push({
@@ -239,13 +246,15 @@ export class StaticSecurityAuditor implements IProjectAuditor {
 
   private isHighEntropySecret(value: string): boolean {
     // Gate 1: length bounds
-    if (value.length < ENTROPY_MIN_LEN || value.length > ENTROPY_MAX_LEN) return false;
+    if (value.length < ENTROPY_MIN_LEN || value.length > ENTROPY_MAX_LEN)
+      return false;
 
     // Gate 2: must be predominantly printable ASCII
     const asciiChars = [...value].filter(
       (c) => c.charCodeAt(0) >= 0x20 && c.charCodeAt(0) <= 0x7e,
     );
-    if (asciiChars.length / value.length < ENTROPY_MIN_ASCII_RATIO) return false;
+    if (asciiChars.length / value.length < ENTROPY_MIN_ASCII_RATIO)
+      return false;
 
     // Gate 3: no internal whitespace (secrets are never sentences)
     if (/\s/.test(value)) return false;
@@ -274,21 +283,15 @@ export class StaticSecurityAuditor implements IProjectAuditor {
   }
 
   private extractStringLiterals(
+    filePath: string,
     content: string,
   ): Array<{ value: string; line: number }> {
-    const literals: Array<{ value: string; line: number }> = [];
-    const lines = content.split("\n");
-    // Match single, double, and backtick-quoted strings
-    // Excludes template expression internals — handled by Gate 5
-    const regex = /(["'`])((?:(?=(\\?))\3.)*?)\1/g;
-    for (let i = 0; i < lines.length; i++) {
-      let match: RegExpExecArray | null;
-      regex.lastIndex = 0;
-      while ((match = regex.exec(lines[i])) !== null) {
-        literals.push({ value: match[2], line: i + 1 });
-      }
+    try {
+      const strategy = LanguageStrategyManager.getStrategy(filePath);
+      return strategy.extractStringLiterals(content);
+    } catch {
+      return [];
     }
-    return literals;
   }
 
   /**

@@ -21,6 +21,7 @@
  *   error margin is typically ±2 on real-world code.
  */
 
+import { LanguageStrategyManager } from "../analysis/languages/LanguageStrategyManager.js";
 import type { CodeSegment } from "../../core/entities/CodeSegment.js";
 import type {
   ComplexityReport,
@@ -33,19 +34,6 @@ import type {
 
 /** Functions with CC above this are reported as hotspots. */
 const HIGH_COMPLEXITY_THRESHOLD = 10;
-
-/**
- * Regex that matches the start of a named function/method declaration.
- * Groups: [1] = function name.
- * Covers: TS/JS function declarations, arrow functions assigned to const/let,
- *         class methods, Java/Go methods.
- */
-const FUNCTION_START_RE =
-  /(?:^|\s)(?:async\s+)?(?:function\s+([\w$]+)|(?:public|private|protected|static|override|async|\s)*([\w$]+)\s*(?:<[^>]*>)?\s*\([^)]*\)\s*(?::[^{]*)?\{|(?:const|let|var)\s+([\w$]+)\s*=\s*(?:async\s+)?(?:\([^)]*\)|[\w$]+)\s*=>\s*\{)/;
-
-/** Decision-point keywords and operators that increment CC. */
-const DECISION_POINT_RE =
-  /\b(?:if|else\s+if|for|while|do|switch|case|catch)\b|\?\?|\?(?!:)|&&|\|\|/g;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ComplexityAnalyzer
@@ -90,81 +78,42 @@ export class ComplexityAnalyzer {
 
   // ── Private ───────────────────────────────────────────────────────────────────
 
-  private analyzeFile(file: CodeSegment): FunctionComplexity[] {
-    const lines = file.originalContent.split("\n");
-    const functions: FunctionComplexity[] = [];
-
-    let inFunction = false;
-    let currentName = "(anonymous)";
-    let currentStart = 1;
-    let currentCC = 1;
-    let braceDepth = 0;
-    let functionBraceStart = 0;
-
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
-      const lineNum = i + 1;
-
-      // Strip string literals and comments to avoid false keyword matches
-      const stripped = this.stripStringsAndComments(line);
-
-      if (!inFunction) {
-        const match = FUNCTION_START_RE.exec(stripped);
-        if (match) {
-          inFunction = true;
-          currentName = match[1] ?? match[2] ?? match[3] ?? "(anonymous)";
-          currentStart = lineNum;
-          currentCC = 1;
-          functionBraceStart = braceDepth;
-          braceDepth += this.countBraceDelta(stripped);
-        } else {
-          braceDepth += this.countBraceDelta(stripped);
-          if (braceDepth < 0) braceDepth = 0;
-        }
-      } else {
-        // Count decision points
-        const decisions = (stripped.match(DECISION_POINT_RE) ?? []).length;
-        currentCC += decisions;
-
-        const delta = this.countBraceDelta(stripped);
-        braceDepth += delta;
-
-        // Function ends when brace depth returns to where it started
-        if (braceDepth <= functionBraceStart) {
-          functions.push({
-            filePath: file.filePath,
-            functionName: currentName,
-            startLine: currentStart,
-            complexity: currentCC,
-          });
-          inFunction = false;
-          braceDepth = Math.max(0, braceDepth);
-        }
-      }
-    }
-
-    return functions;
-  }
-
-  /** Count net brace delta (+1 for {, -1 for }) on a line. */
-  private countBraceDelta(line: string): number {
-    let delta = 0;
-    for (const ch of line) {
-      if (ch === "{") delta++;
-      else if (ch === "}") delta--;
-    }
-    return delta;
-  }
-
   /**
-   * Remove string literals and single-line comments from a line
-   * to avoid false decision-point matches inside strings.
+   * Delegates analysis to language-specific strategies.
+   * Handles multi-language projects safely.
    */
-  private stripStringsAndComments(line: string): string {
-    return line
-      .replace(/\/\/.*$/, "")        // single-line comment
-      .replace(/`[^`]*`/g, "``")     // template literals
-      .replace(/"[^"]*"/g, '""')     // double-quoted strings
-      .replace(/'[^']*'/g, "''");    // single-quoted strings
+  private analyzeFile(file: CodeSegment): FunctionComplexity[] {
+    try {
+      const strategy = LanguageStrategyManager.getStrategy(file.filePath);
+      const boundaries = strategy.extractFunctions(file.originalContent);
+      const fileFunctions: FunctionComplexity[] = [];
+      const lines = file.originalContent.split("\n");
+
+      for (let i = 0; i < boundaries.length; i++) {
+        const boundary = boundaries[i];
+        const nextBoundary = boundaries[i + 1];
+        const endLine = nextBoundary
+          ? nextBoundary.startLine - 1
+          : lines.length;
+
+        const decisionPoints = strategy.countDecisionPoints(
+          file.originalContent,
+          boundary.startLine,
+          endLine,
+        );
+
+        fileFunctions.push({
+          filePath: file.filePath,
+          functionName: boundary.name,
+          startLine: boundary.startLine,
+          complexity: 1 + decisionPoints, // CC = 1 + points
+        });
+      }
+
+      return fileFunctions;
+    } catch (e) {
+      console.warn(`ComplexityAnalyzer: failed to analyze ${file.filePath}`, e);
+      return [];
+    }
   }
 }

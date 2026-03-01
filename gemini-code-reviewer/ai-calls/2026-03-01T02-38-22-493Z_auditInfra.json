@@ -1,0 +1,459 @@
+{
+  "call": "auditInfra",
+  "model": "gemini-2.5-flash",
+  "timestamp": "2026-03-01T02:38:22.493Z",
+  "durationMs": 35930,
+  "retryCount": 0,
+  "estimatedInputTokens": 1405,
+  "payload": {
+    "model": "gemini-2.5-flash",
+    "project": "vg1p-apps-gemini-code-b1",
+    "request": {
+      "systemInstruction": {
+        "role": "system",
+        "parts": [
+          {
+            "text": "You are an expert software architect performing an infrastructure-oriented repository audit on a JavaScript/TypeScript project.\n\nYour ONLY job in this call is FILE DISCOVERY, WEIGHTING, and RANKING — do NOT suggest fixes.\n\n## Inputs you receive\n- `package.json`: dependency manifest and scripts.\n- Infra files: CI/CD configs, Dockerfiles, build/bundler configs, IaC, environment files.\n- Project file tree: every file with its path, extension, byte size, and line count.\n\n## Weighting rules (0–100 scale)\n\n### High weight (60–100) — files that directly affect build, deploy, runtime, or security:\n- CI/CD configs: .gitlab-ci.yml, .github/workflows/*, Jenkinsfile, Makefile targets.\n- Build/bundler: webpack.config.*, vite.config.*, rollup.config.*, tsconfig*.json, esbuild configs.\n- Container & IaC: Dockerfile*, docker-compose.*, k8s manifests, Terraform (.tf), Pulumi, CDK.\n- Framework bootstrap: main entrypoints, root app module, DI container wiring, routing root.\n- Security-critical: auth middleware, permission guards, CORS config, env/secret management.\n- Shared infrastructure modules used across many features.\n\n### Medium weight (20–59) — files with meaningful but scoped impact:\n- Feature modules with real business logic, non-trivial services, complex components.\n- Database migration files, ORM entities with business rules.\n- API gateway or route definitions that expose endpoints.\n\n### Low / zero weight (0–19) — files safe to skip in deep review:\n- Pure type/interface/enum/model files with NO branching, loops, side-effects, or IO.\n- Auto-generated files: *.generated.*, *.g.ts, *.gen.ts, *pb.ts (protobuf), graphql schema snapshots.\n- Test files: *.spec.ts, *.test.ts, *.e2e.ts (flag their EXISTENCE, but skip deep review).\n- Storybook, mocks, fixtures: *.stories.ts, *.mock.ts, /mocks/*, /fixtures/*.\n- Translation/i18n JSON files.\n- Files under dist/, build/, .cache/, node_modules/ (should not appear, but ignore if present).\n\n## Boilerplate detection heuristic\nMark `ignore_in_deep_review: true` when ALL of the following are true:\n1. File name matches: *.model.ts | *.models.ts | *.types.ts | *.type.ts | *.enum.ts | *.enums.ts | *.interface.ts | *.interfaces.ts | *.dto.ts | *.const.ts | *.constants.ts\n2. Line count ≤ 50\n3. Content (inferred from name + size) contains ONLY: type aliases, interfaces, enums, plain constants — no class methods, no function bodies, no async operations.\n\nExample: a file named `user-modal.ts` or `status.enum.ts` with 30 lines → weight = 0, ignore_in_deep_review = true.\nCounter-example: `app.module.ts` or `auth.guard.ts` → never ignore regardless of line count.\n\n## Output format\nReturn ONLY a valid JSON object matching this exact shape — no markdown, no explanation outside JSON:\n\n```json\n{\n  \"files\": [\n    {\n      \"path\": \"src/app/app.module.ts\",\n      \"extension\": \".ts\",\n      \"lines\": 123,\n      \"bytes\": 3456,\n      \"weight\": 87,\n      \"reason\": \"Root Angular module configuring app-wide providers and routing.\",\n      \"ignore_in_deep_review\": false\n    }\n  ],\n  \"summary\": {\n    \"total_files\": 0,\n    \"total_lines\": 0,\n    \"high_impact_files\": [\"path/to/high.ts\"],\n    \"ignored_patterns_detected\": [\"*.model.ts\", \"*.enum.ts\", \"*.spec.ts\"]\n  }\n}\n```\n\nSort the `files` array by `weight` descending.\nBe deterministic: structurally similar files must receive similar weights."
+          }
+        ]
+      },
+      "contents": [
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "## package.json\n```json\n{\r\n  \"name\": \"gemini-code-reviewer\",\r\n  \"version\": \"1.0.2\",\r\n  \"description\": \"AI-powered code reviewer using Google Gemini, with smart file scanning and best-practices injection.\",\r\n  \"type\": \"module\",\r\n  \"main\": \"dist/index.js\",\r\n  \"bin\": {\r\n    \"gemini-code-reviewer\": \"dist/presentation/cli/main.js\"\r\n  },\r\n  \"scripts\": {\r\n    \"build\": \"tsc\",\r\n    \"build:watch\": \"tsc --watch\",\r\n    \"start\": \"node dist/presentation/cli/main.js\",\r\n    \"dev\": \"ts-node --esm src/presentation/cli/main.ts\",\r\n    \"test\": \"vitest run\",\r\n    \"lint\": \"eslint src --ext .ts\",\r\n    \"format\": \"prettier --write src\",\r\n    \"clean\": \"rimraf dist\"\r\n  },\r\n  \"files\": [\r\n    \"dist\",\r\n    \"README.md\"\r\n  ],\r\n  \"keywords\": [\r\n    \"gemini\",\r\n    \"ai\",\r\n    \"code-review\",\r\n    \"cli\",\r\n    \"google\"\r\n  ],\r\n  \"author\": \"Mohamed Bouattour\",\r\n  \"license\": \"Apache-2.0\",\r\n  \"repository\": {\r\n    \"type\": \"git\",\r\n    \"url\": \"git+https://github.com/MohamedBouattour/Gemini-Code-Reviwer.git\"\r\n  },\r\n  \"bugs\": {\r\n    \"url\": \"https://github.com/MohamedBouattour/Gemini-Code-Reviwer/issues\"\r\n  },\r\n  \"homepage\": \"https://github.com/MohamedBouattour/Gemini-Code-Reviwer#readme\",\r\n  \"dependencies\": {\r\n    \"@google/gemini-cli-core\": \"^0.30.0\",\r\n    \"@google/genai\": \"^1.0.0\",\r\n    \"chalk\": \"^5.3.0\",\r\n    \"commander\": \"^12.1.0\",\r\n    \"dotenv\": \"^16.4.5\",\r\n    \"fast-glob\": \"^3.3.2\",\r\n    \"fs-extra\": \"^11.2.0\",\r\n    \"google-auth-library\": \"^10.6.1\",\r\n    \"open\": \"^11.0.0\",\r\n    \"ora\": \"^8.1.0\"\r\n  },\r\n  \"devDependencies\": {\r\n    \"@eslint/js\": \"^10.0.1\",\r\n    \"@types/fs-extra\": \"^11.0.4\",\r\n    \"@types/node\": \"^20.14.0\",\r\n    \"@vitest/coverage-v8\": \"^4.0.18\",\r\n    \"eslint\": \"^10.0.2\",\r\n    \"globals\": \"^17.3.0\",\r\n    \"jiti\": \"^2.6.1\",\r\n    \"prettier\": \"^3.3.2\",\r\n    \"rimraf\": \"^5.0.9\",\r\n    \"ts-node\": \"^10.9.2\",\r\n    \"typescript\": \"^5.5.3\",\r\n    \"typescript-eslint\": \"^8.56.1\",\r\n    \"vitest\": \"^4.0.18\"\r\n  },\r\n  \"engines\": {\r\n    \"node\": \">=20.0.0\"\r\n  }\r\n}\r\n\n```\n\n## Full Project File Tree (35 files)\n```json\n[\n{ \"path\": \"src\\application\\BootstrapProject.ts\", \"extension\": \"ts\", \"bytes\": 17183, \"lines\": 429 }\n{ \"path\": \"src\\application\\RunCodeReview.ts\", \"extension\": \"ts\", \"bytes\": 21112, \"lines\": 506 }\n{ \"path\": \"src\\shared\\constants.ts\", \"extension\": \"ts\", \"bytes\": 2700, \"lines\": 45 }\n{ \"path\": \"src\\core\\entities\\CodeBenchmarkResults.ts\", \"extension\": \"ts\", \"bytes\": 5007, \"lines\": 111 }\n{ \"path\": \"src\\core\\entities\\CodeSegment.ts\", \"extension\": \"ts\", \"bytes\": 695, \"lines\": 21 }\n{ \"path\": \"src\\core\\entities\\ProjectReport.ts\", \"extension\": \"ts\", \"bytes\": 3122, \"lines\": 89 }\n{ \"path\": \"src\\core\\entities\\ReviewFinding.ts\", \"extension\": \"ts\", \"bytes\": 2563, \"lines\": 57 }\n{ \"path\": \"src\\core\\domain-errors\\ReviewerErrors.ts\", \"extension\": \"ts\", \"bytes\": 3729, \"lines\": 69 }\n{ \"path\": \"src\\core\\interfaces\\IAiProvider.ts\", \"extension\": \"ts\", \"bytes\": 10165, \"lines\": 280 }\n{ \"path\": \"src\\core\\interfaces\\IFileScanner.ts\", \"extension\": \"ts\", \"bytes\": 2993, \"lines\": 61 }\n{ \"path\": \"src\\core\\interfaces\\IProjectAuditor.ts\", \"extension\": \"ts\", \"bytes\": 3126, \"lines\": 60 }\n{ \"path\": \"src\\core\\interfaces\\IReportBuilder.ts\", \"extension\": \"ts\", \"bytes\": 3818, \"lines\": 92 }\n{ \"path\": \"src\\core\\interfaces\\ISkillRepository.ts\", \"extension\": \"ts\", \"bytes\": 701, \"lines\": 20 }\n{ \"path\": \"src\\infrastructure\\ai\\AiCallLogger.ts\", \"extension\": \"ts\", \"bytes\": 6145, \"lines\": 148 }\n{ \"path\": \"src\\infrastructure\\ai\\GeminiAiProvider.ts\", \"extension\": \"ts\", \"bytes\": 720, \"lines\": 18 }\n{ \"path\": \"src\\infrastructure\\ai\\GeminiProvider.ts\", \"extension\": \"ts\", \"bytes\": 27310, \"lines\": 805 }\n{ \"path\": \"src\\infrastructure\\ai\\prompts.ts\", \"extension\": \"ts\", \"bytes\": 13689, \"lines\": 266 }\n{ \"path\": \"src\\infrastructure\\auth\\GoogleAuth.ts\", \"extension\": \"ts\", \"bytes\": 9009, \"lines\": 289 }\n{ \"path\": \"src\\infrastructure\\benchmark\\CodeBenchmarkAuditor.ts\", \"extension\": \"ts\", \"bytes\": 4737, \"lines\": 123 }\n{ \"path\": \"src\\infrastructure\\benchmark\\ComplexityAnalyzer.ts\", \"extension\": \"ts\", \"bytes\": 6755, \"lines\": 171 }\n{ \"path\": \"src\\infrastructure\\benchmark\\DuplicationAnalyzer.ts\", \"extension\": \"ts\", \"bytes\": 6824, \"lines\": 179 }\n{ \"path\": \"src\\infrastructure\\benchmark\\NamingConventionAnalyzer.ts\", \"extension\": \"ts\", \"bytes\": 11121, \"lines\": 277 }\n{ \"path\": \"src\\infrastructure\\config\\ConfigurationAuditor.ts\", \"extension\": \"ts\", \"bytes\": 1375, \"lines\": 43 }\n{ \"path\": \"src\\infrastructure\\config\\LocalSkillRepository.ts\", \"extension\": \"ts\", \"bytes\": 1516, \"lines\": 50 }\n{ \"path\": \"src\\infrastructure\\config\\SkillSetRepository.ts\", \"extension\": \"ts\", \"bytes\": 638, \"lines\": 17 }\n{ \"path\": \"src\\infrastructure\\filesystem\\FileSystemScanner.ts\", \"extension\": \"ts\", \"bytes\": 7028, \"lines\": 176 }\n{ \"path\": \"src\\infrastructure\\filesystem\\ProjectScanner.ts\", \"extension\": \"ts\", \"bytes\": 17805, \"lines\": 513 }\n{ \"path\": \"src\\infrastructure\\persistence\\FeedbackStore.ts\", \"extension\": \"ts\", \"bytes\": 8343, \"lines\": 208 }\n{ \"path\": \"src\\infrastructure\\security\\exposureDetector.ts\", \"extension\": \"ts\", \"bytes\": 856, \"lines\": 31 }\n{ \"path\": \"src\\infrastructure\\security\\InfraAuditorAdapter.ts\", \"extension\": \"ts\", \"bytes\": 13558, \"lines\": 330 }\n{ \"path\": \"src\\infrastructure\\security\\StaticSecurityAuditor.ts\", \"extension\": \"ts\", \"bytes\": 12613, \"lines\": 313 }\n{ \"path\": \"src\\presentation\\cli\\DependencyContainer.ts\", \"extension\": \"ts\", \"bytes\": 6817, \"lines\": 140 }\n{ \"path\": \"src\\presentation\\cli\\main.ts\", \"extension\": \"ts\", \"bytes\": 14106, \"lines\": 298 }\n{ \"path\": \"src\\presentation\\report\\ReportBuilder.ts\", \"extension\": \"ts\", \"bytes\": 30626, \"lines\": 782 }\n{ \"path\": \"src\\shared\\utils\\Logger.ts\", \"extension\": \"ts\", \"bytes\": 2475, \"lines\": 54 }\n]\n```"
+            }
+          ]
+        }
+      ],
+      "generationConfig": {
+        "temperature": 0,
+        "responseMimeType": "application/json",
+        "responseSchema": {
+          "type": "OBJECT",
+          "properties": {
+            "files": {
+              "type": "ARRAY",
+              "items": {
+                "type": "OBJECT",
+                "properties": {
+                  "path": {
+                    "type": "STRING"
+                  },
+                  "extension": {
+                    "type": "STRING"
+                  },
+                  "lines": {
+                    "type": "NUMBER"
+                  },
+                  "bytes": {
+                    "type": "NUMBER"
+                  },
+                  "weight": {
+                    "type": "NUMBER"
+                  },
+                  "reason": {
+                    "type": "STRING"
+                  },
+                  "ignore_in_deep_review": {
+                    "type": "BOOLEAN"
+                  }
+                },
+                "required": [
+                  "path",
+                  "extension",
+                  "lines",
+                  "bytes",
+                  "weight",
+                  "reason",
+                  "ignore_in_deep_review"
+                ]
+              }
+            },
+            "summary": {
+              "type": "OBJECT",
+              "properties": {
+                "total_files": {
+                  "type": "NUMBER"
+                },
+                "total_lines": {
+                  "type": "NUMBER"
+                },
+                "high_impact_files": {
+                  "type": "ARRAY",
+                  "items": {
+                    "type": "STRING"
+                  }
+                },
+                "ignored_patterns_detected": {
+                  "type": "ARRAY",
+                  "items": {
+                    "type": "STRING"
+                  }
+                }
+              },
+              "required": [
+                "total_files",
+                "total_lines",
+                "high_impact_files",
+                "ignored_patterns_detected"
+              ]
+            }
+          },
+          "required": [
+            "files",
+            "summary"
+          ]
+        }
+      }
+    }
+  },
+  "response": {
+    "files": [
+      {
+        "path": "src\\presentation\\cli\\main.ts",
+        "extension": ".ts",
+        "lines": 298,
+        "bytes": 14106,
+        "weight": 100,
+        "reason": "Main entry point for the command-line interface. Framework bootstrap.",
+        "ignore_in_deep_review": false
+      },
+      {
+        "path": "src\\application\\RunCodeReview.ts",
+        "extension": ".ts",
+        "lines": 506,
+        "bytes": 21112,
+        "weight": 95,
+        "reason": "Main application service orchestrating the code review process. High-level business logic.",
+        "ignore_in_deep_review": false
+      },
+      {
+        "path": "src\\infrastructure\bai\bGeminiProvider.ts",
+        "extension": ".ts",
+        "lines": 805,
+        "bytes": 27310,
+        "weight": 95,
+        "reason": "Concrete implementation of the AI provider interface, integrating with Gemini API. Critical infrastructure.",
+        "ignore_in_deep_review": false
+      },
+      {
+        "path": "src\\application\\BootstrapProject.ts",
+        "extension": ".ts",
+        "lines": 429,
+        "bytes": 17183,
+        "weight": 90,
+        "reason": "Core application logic for project initialization and setup. Orchestrates major components.",
+        "ignore_in_deep_review": false
+      },
+      {
+        "path": "src\\infrastructure\\auth\\GoogleAuth.ts",
+        "extension": ".ts",
+        "lines": 289,
+        "bytes": 9009,
+        "weight": 90,
+        "reason": "Handles Google authentication, a security-critical component.",
+        "ignore_in_deep_review": false
+      },
+      {
+        "path": "src\\infrastructure\\filesystem\\ProjectScanner.ts",
+        "extension": ".ts",
+        "lines": 513,
+        "bytes": 17805,
+        "weight": 90,
+        "reason": "Scans the entire project structure, a critical part of the application's input gathering.",
+        "ignore_in_deep_review": false
+      },
+      {
+        "path": "src\\infrastructure\\security\\StaticSecurityAuditor.ts",
+        "extension": ".ts",
+        "lines": 313,
+        "bytes": 12613,
+        "weight": 90,
+        "reason": "Performs static security analysis. Security-critical.",
+        "ignore_in_deep_review": false
+      },
+      {
+        "path": "src\\infrastructure\\security\\InfraAuditorAdapter.ts",
+        "extension": ".ts",
+        "lines": 330,
+        "bytes": 13558,
+        "weight": 85,
+        "reason": "Adapts infrastructure auditing for security, security-critical.",
+        "ignore_in_deep_review": false
+      },
+      {
+        "path": "src\\infrastructure\\security\\exposureDetector.ts",
+        "extension": ".ts",
+        "lines": 31,
+        "bytes": 856,
+        "weight": 80,
+        "reason": "Detects security exposures. Security-critical.",
+        "ignore_in_deep_review": false
+      },
+      {
+        "path": "src\\presentation\\cli\\DependencyContainer.ts",
+        "extension": ".ts",
+        "lines": 140,
+        "bytes": 6817,
+        "weight": 80,
+        "reason": "Sets up dependency injection for the CLI application. Framework bootstrap/DI wiring.",
+        "ignore_in_deep_review": false
+      },
+      {
+        "path": "src\\infrastructure\\filesystem\\FileSystemScanner.ts",
+        "extension": ".ts",
+        "lines": 176,
+        "bytes": 7028,
+        "weight": 75,
+        "reason": "Scans the file system, a core utility for the application.",
+        "ignore_in_deep_review": false
+      },
+      {
+        "path": "src\\infrastructure\bai\bprompts.ts",
+        "extension": ".ts",
+        "lines": 266,
+        "bytes": 13689,
+        "weight": 70,
+        "reason": "Contains AI prompts, which are critical for the quality and behavior of the AI review.",
+        "ignore_in_deep_review": false
+      },
+      {
+        "path": "src\\core\\interfaces\\IAiProvider.ts",
+        "extension": ".ts",
+        "lines": 280,
+        "bytes": 10165,
+        "weight": 65,
+        "reason": "Defines the interface for AI providers. Critical abstraction.",
+        "ignore_in_deep_review": false
+      },
+      {
+        "path": "src\\core\\interfaces\\IFileScanner.ts",
+        "extension": ".ts",
+        "lines": 61,
+        "bytes": 2993,
+        "weight": 65,
+        "reason": "Defines the interface for file scanning. Critical abstraction.",
+        "ignore_in_deep_review": false
+      },
+      {
+        "path": "src\\core\\interfaces\\IProjectAuditor.ts",
+        "extension": ".ts",
+        "lines": 60,
+        "bytes": 3126,
+        "weight": 65,
+        "reason": "Defines the interface for project auditing. Critical abstraction.",
+        "ignore_in_deep_review": false
+      },
+      {
+        "path": "src\\core\\interfaces\\IReportBuilder.ts",
+        "extension": ".ts",
+        "lines": 92,
+        "bytes": 3818,
+        "weight": 65,
+        "reason": "Defines the interface for report generation. Critical abstraction.",
+        "ignore_in_deep_review": false
+      },
+      {
+        "path": "src\\infrastructure\\config\\ConfigurationAuditor.ts",
+        "extension": ".ts",
+        "lines": 43,
+        "bytes": 1375,
+        "weight": 60,
+        "reason": "Audits configuration, important for application setup and behavior.",
+        "ignore_in_deep_review": false
+      },
+      {
+        "path": "src\\presentation\\report\\ReportBuilder.ts",
+        "extension": ".ts",
+        "lines": 782,
+        "bytes": 30626,
+        "weight": 60,
+        "reason": "Builds the final review report. Important output generation.",
+        "ignore_in_deep_review": false
+      },
+      {
+        "path": "src\\infrastructure\\benchmark\\CodeBenchmarkAuditor.ts",
+        "extension": ".ts",
+        "lines": 123,
+        "bytes": 4737,
+        "weight": 55,
+        "reason": "Audits code for benchmarks, part of the core review process.",
+        "ignore_in_deep_review": false
+      },
+      {
+        "path": "src\\infrastructure\\persistence\\FeedbackStore.ts",
+        "extension": ".ts",
+        "lines": 208,
+        "bytes": 8343,
+        "weight": 55,
+        "reason": "Handles storing feedback, an important persistence layer.",
+        "ignore_in_deep_review": false
+      },
+      {
+        "path": "src\\infrastructure\\benchmark\\ComplexityAnalyzer.ts",
+        "extension": ".ts",
+        "lines": 171,
+        "bytes": 6755,
+        "weight": 50,
+        "reason": "Analyzes code complexity, a specific aspect of the review.",
+        "ignore_in_deep_review": false
+      },
+      {
+        "path": "src\\infrastructure\\benchmark\\DuplicationAnalyzer.ts",
+        "extension": ".ts",
+        "lines": 179,
+        "bytes": 6824,
+        "weight": 50,
+        "reason": "Analyzes code for duplication, a specific aspect of the review.",
+        "ignore_in_deep_review": false
+      },
+      {
+        "path": "src\\infrastructure\\benchmark\\NamingConventionAnalyzer.ts",
+        "extension": ".ts",
+        "lines": 277,
+        "bytes": 11121,
+        "weight": 50,
+        "reason": "Analyzes code for naming conventions, a specific aspect of the review.",
+        "ignore_in_deep_review": false
+      },
+      {
+        "path": "src\\infrastructure\\config\\LocalSkillRepository.ts",
+        "extension": ".ts",
+        "lines": 50,
+        "bytes": 1516,
+        "weight": 45,
+        "reason": "Manages local skills/configurations.",
+        "ignore_in_deep_review": false
+      },
+      {
+        "path": "src\\infrastructure\bai\bAiCallLogger.ts",
+        "extension": ".ts",
+        "lines": 148,
+        "bytes": 6145,
+        "weight": 40,
+        "reason": "Handles logging of AI calls, important for monitoring and debugging.",
+        "ignore_in_deep_review": false
+      },
+      {
+        "path": "src\\infrastructure\\config\\SkillSetRepository.ts",
+        "extension": ".ts",
+        "lines": 17,
+        "bytes": 638,
+        "weight": 40,
+        "reason": "Manages skill sets.",
+        "ignore_in_deep_review": false
+      },
+      {
+        "path": "src\\shared\\utils\\Logger.ts",
+        "extension": ".ts",
+        "lines": 54,
+        "bytes": 2475,
+        "weight": 40,
+        "reason": "Utility for logging, shared infrastructure.",
+        "ignore_in_deep_review": false
+      },
+      {
+        "path": "src\\infrastructure\bai\bGeminiAiProvider.ts",
+        "extension": ".ts",
+        "lines": 18,
+        "bytes": 720,
+        "weight": 30,
+        "reason": "Likely a small wrapper or specific implementation detail for Gemini AI.",
+        "ignore_in_deep_review": false
+      },
+      {
+        "path": "src\\core\\domain-errors\\ReviewerErrors.ts",
+        "extension": ".ts",
+        "lines": 69,
+        "bytes": 3729,
+        "weight": 25,
+        "reason": "Defines custom domain-specific error classes.",
+        "ignore_in_deep_review": false
+      },
+      {
+        "path": "src\\core\\entities\\CodeBenchmarkResults.ts",
+        "extension": ".ts",
+        "lines": 111,
+        "bytes": 5007,
+        "weight": 15,
+        "reason": "Defines the structure for code benchmark results.",
+        "ignore_in_deep_review": false
+      },
+      {
+        "path": "src\\core\\entities\\ProjectReport.ts",
+        "extension": ".ts",
+        "lines": 89,
+        "bytes": 3122,
+        "weight": 15,
+        "reason": "Defines the structure for the project report.",
+        "ignore_in_deep_review": false
+      },
+      {
+        "path": "src\\core\\entities\\ReviewFinding.ts",
+        "extension": ".ts",
+        "lines": 57,
+        "bytes": 2563,
+        "weight": 15,
+        "reason": "Defines the structure for a code review finding.",
+        "ignore_in_deep_review": false
+      },
+      {
+        "path": "src\\core\\entities\\CodeSegment.ts",
+        "extension": ".ts",
+        "lines": 21,
+        "bytes": 695,
+        "weight": 5,
+        "reason": "Defines a core entity for a code segment. Likely pure data structure.",
+        "ignore_in_deep_review": true
+      },
+      {
+        "path": "src\\core\\interfaces\\ISkillRepository.ts",
+        "extension": ".ts",
+        "lines": 20,
+        "bytes": 701,
+        "weight": 5,
+        "reason": "Defines the interface for skill repository. Likely pure interface.",
+        "ignore_in_deep_review": true
+      },
+      {
+        "path": "src\\shared\\constants.ts",
+        "extension": ".ts",
+        "lines": 45,
+        "bytes": 2700,
+        "weight": 5,
+        "reason": "Defines shared constants. Likely simple values.",
+        "ignore_in_deep_review": true
+      }
+    ],
+    "summary": {
+      "total_files": 35,
+      "total_lines": 7071,
+      "high_impact_files": [
+        "src\\presentation\\cli\\main.ts",
+        "src\\application\\RunCodeReview.ts",
+        "src\\infrastructure\bai\bGeminiProvider.ts",
+        "src\\application\\BootstrapProject.ts",
+        "src\\infrastructure\\auth\\GoogleAuth.ts",
+        "src\\infrastructure\\filesystem\\ProjectScanner.ts",
+        "src\\infrastructure\\security\\StaticSecurityAuditor.ts",
+        "src\\infrastructure\\security\\InfraAuditorAdapter.ts",
+        "src\\infrastructure\\security\\exposureDetector.ts",
+        "src\\presentation\\cli\\DependencyContainer.ts",
+        "src\\infrastructure\\filesystem\\FileSystemScanner.ts",
+        "src\\infrastructure\bai\bprompts.ts",
+        "src\\core\\interfaces\\IAiProvider.ts",
+        "src\\core\\interfaces\\IFileScanner.ts",
+        "src\\core\\interfaces\\IProjectAuditor.ts",
+        "src\\core\\interfaces\\IReportBuilder.ts",
+        "src\\infrastructure\\config\\ConfigurationAuditor.ts",
+        "src\\presentation\\report\\ReportBuilder.ts"
+      ],
+      "ignored_patterns_detected": [
+        "*.constants.ts",
+        "*.interface.ts"
+      ]
+    }
+  }
+}

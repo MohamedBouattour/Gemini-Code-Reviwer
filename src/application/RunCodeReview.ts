@@ -222,8 +222,10 @@ export class RunCodeReview {
           combinedAuditResult,
           result,
         );
-      } catch (e: any) {
-        logDebug(`Auditor "${auditor.name}" failed: ${e.message}`);
+      } catch (e: unknown) {
+        logDebug(
+          `Auditor "${auditor.name}" failed: ${e instanceof Error ? e.message : String(e)}`,
+        );
       }
     }
 
@@ -278,6 +280,9 @@ export class RunCodeReview {
     // subScores are no longer available from the new pipeline (deepReview doesn't emit them)
     // They could be added back to DeepReviewResult in a future iteration.
     this.reportBuilder.setAiScores(combinedAuditResult.benchmarkScores ?? {});
+    if (combinedAuditResult.benchmarks) {
+      this.reportBuilder.setLocalBenchmarks(combinedAuditResult.benchmarks);
+    }
     const previewScore = this.reportBuilder.calculateFinalScore();
 
     const executiveSummary = await this.aiProvider.generateExecutiveSummary({
@@ -356,6 +361,16 @@ export class RunCodeReview {
       infraFindings: allInfraFindings,
       isPublicFacing,
       executiveSummary,
+      namingConventionScore:
+        combinedAuditResult.benchmarkScores?.namingConventionScore,
+      solidPrinciplesScore:
+        combinedAuditResult.benchmarkScores?.solidPrinciplesScore,
+      codeDuplicationPercentage:
+        combinedAuditResult.benchmarkScores?.codeDuplicationPercentage,
+      cyclomaticComplexity:
+        combinedAuditResult.benchmarkScores?.cyclomaticComplexity,
+      maintainabilityIndex:
+        combinedAuditResult.benchmarkScores?.maintainabilityIndex,
       timingStats,
     };
 
@@ -365,8 +380,10 @@ export class RunCodeReview {
         JSON.stringify(cacheState, null, 2),
         "utf-8",
       );
-    } catch (err: any) {
-      logDebug(`Could not save cache: ${err.message}`);
+    } catch (err: unknown) {
+      logDebug(
+        `Could not save cache: ${err instanceof Error ? err.message : String(err)}`,
+      );
     }
 
     // ── Step 10: Assemble final report ────────────────────────────────────────
@@ -377,7 +394,8 @@ export class RunCodeReview {
       isPublicFacing,
       infraScannedFiles,
       executiveSummary,
-      aiSubScores: {},
+      aiSubScores: combinedAuditResult.benchmarkScores ?? {},
+      localBenchmarks: combinedAuditResult.benchmarks,
       fileHashes: currentFileHashes,
       timingStats,
     };
@@ -413,6 +431,7 @@ export class RunCodeReview {
       benchmarkScores: addition.benchmarkScores
         ? { ...(base.benchmarkScores ?? {}), ...addition.benchmarkScores }
         : base.benchmarkScores,
+      benchmarks: addition.benchmarks ?? base.benchmarks,
     };
   }
 
@@ -472,7 +491,13 @@ export class RunCodeReview {
       infraScannedFiles: [],
       executiveSummary:
         state.executiveSummary as ProjectReport["executiveSummary"],
-      aiSubScores: {},
+      aiSubScores: {
+        namingConventionScore: state.namingConventionScore,
+        solidPrinciplesScore: state.solidPrinciplesScore,
+        codeDuplicationPercentage: state.codeDuplicationPercentage,
+        cyclomaticComplexity: state.cyclomaticComplexity,
+        maintainabilityIndex: state.maintainabilityIndex,
+      },
       fileHashes: currentFileHashes,
       timingStats: state.timingStats,
     };

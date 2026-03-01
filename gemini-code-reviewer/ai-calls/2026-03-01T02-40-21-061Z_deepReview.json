@@ -1,0 +1,768 @@
+{
+  "call": "deepReview",
+  "model": "gemini-2.5-flash",
+  "timestamp": "2026-03-01T02:40:21.061Z",
+  "durationMs": 118563,
+  "retryCount": 1,
+  "estimatedInputTokens": 24128,
+  "payload": {
+    "model": "gemini-2.5-flash",
+    "project": "vg1p-apps-gemini-code-b1",
+    "request": {
+      "systemInstruction": {
+        "role": "system",
+        "parts": [
+          {
+            "text": "You are an expert software architect performing a focused deep review on a curated subset of high-impact files selected by a prior infra audit.\n\n## Context\nYou receive:\n- Full source of each high-weight file.\n- Their direct imports (source included where relevant to understand runtime behavior).\n- For frontend frameworks (Angular, React, Vue): the paired HTML/template file.\n- Adjacent config files needed to understand module wiring, routing, or environment.\n\n## What is NOT provided\nPure model, interface, enum, and DTO files marked as boilerplate in the audit (weight = 0, ignore_in_deep_review = true).\nDo NOT request them. Do NOT reference them unless a high-weight file has a critical dependency on their structure that causes a real bug or security flaw.\n\n## Review goals\nFor each file, identify:\n1. **Structural problems**: broken module wiring, circular dependencies, wrong abstraction layers.\n2. **Security issues**: injection, XSS, path traversal, hardcoded secrets, overly permissive CORS/auth.\n3. **Reliability risks**: unhandled promise rejections, missing error boundaries, race conditions, memory leaks.\n4. **Maintainability hotspots**: cyclomatic complexity > 10, deep nesting, SRP violations, large god-classes.\n5. **CI/CD & build risks**: misconfigured pipeline steps, secrets in logs, unpinned dependencies with known CVEs.\n\n## Severity scale\n- **HIGH**: Exploitable security flaw or production-breaking reliability issue.\n- **MEDIUM**: Debt that will cause incidents or slow delivery within 1–3 sprints.\n- **LOW**: Worth fixing but no immediate risk.\n\n## Output format\nReturn ONLY a valid JSON object — no markdown, no explanation outside JSON:\n\n```json\n{\n  \"reviewed_files\": [\n    {\n      \"path\": \"src/app/app.module.ts\",\n      \"overall_assessment\": \"Short paragraph on this file's role and health.\",\n      \"complexity_score\": 42,\n      \"issues\": [\n        {\n          \"severity\": \"HIGH\",\n          \"type\": \"SECURITY | RELIABILITY | MAINTAINABILITY | PERFORMANCE | CONFIG\",\n          \"description\": \"Short description of the issue.\",\n          \"evidence\": \"Relevant code snippet or explanation (≤ 15 words).\",\n          \"suggested_fix\": \"Concise, technology-appropriate fix.\"\n        }\n      ]\n    }\n  ],\n  \"repo_level_findings\": [\n    {\n      \"rank\": 1,\n      \"title\": \"Short title\",\n      \"detail\": \"Detailed explanation with file references.\",\n      \"recommended_action\": \"What to do next.\"\n    }\n  ]\n}\n```\n\nRules:\n- Sort `reviewed_files` by severity (files with HIGH issues first).\n- Limit `repo_level_findings` to the top 5–10 cross-cutting concerns only.\n- Avoid micro-nitpicks: flag only issues with real impact on quality, complexity, or infra risk.\n- Do NOT re-review files that were excluded by the audit (boilerplate/ignore_in_deep_review = true)."
+          }
+        ]
+      },
+      "contents": [
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "## High-Impact Files Under Review (24 files)\n> Selected by infra audit (weight ≥ threshold, not ignored).\n\n### src\\application\\BootstrapProject.ts\n```ts\nconst SKILL_NAMES = [ \"coding-standards\", \"testing-philosophy\", \"ci-cd-requirements\", \"architecture-patterns\", ] as const; type SkillName = (typeof SKILL_NAMES)[number]; const MAX_EXISTING_CONTENT_CHARS = 6_000; type SkillStatus = \"missing\" | \"empty\" | \"has-content\"; interface SkillFileInfo { skillName: SkillName; filePath: string; status: SkillStatus; existingContent?: string; } export interface BootstrapProjectInput { baseDir: string; preloadedProject?: ScannedProject; forceOverwrite?: boolean; debug?: boolean; logDebug: (msg: string) => void; onProgress?: (msg: string) => void; } export class BootstrapProject { constructor( private readonly scanner: IFileScanner, private readonly aiProvider: IAiProvider, private readonly _skillRepository: ISkillRepository, ) {} async execute(input: BootstrapProjectInput): Promise<void> { const { baseDir, preloadedProject, forceOverwrite = false, logDebug, onProgress = () => {}, } = input; const skillsDir = path.join(baseDir, \".agents\", \"skills\"); onProgress(\"🔎 Analyzing existing skill files…\"); const skillInfos = await this.analyzeExistingSkills(skillsDir); const missingOrEmpty = skillInfos.filter((i) => i.status !== \"has-content\"); const hasContent = skillInfos.filter((i) => i.status === \"has-content\"); logDebug( `Skill status: ${skillInfos.map((i) => `${i.skillName}=${i.status}`).join(\", \")}`, ); if (missingOrEmpty.length === 0 && !forceOverwrite) { console.log(`\\n✅ All 4 skill files already exist with content.`); const improve = await this.askYesNo( `\\nDo you want to improve them using the current project scan?\\n` + ` (Existing rules will be KEPT — only new patterns will be ADDED)`, ); if (!improve) { console.log( \"\\n⏭️ Skipping skill improvement. All existing skills kept unchanged.\\n\", ); return; } console.log(\"\"); } else if (missingOrEmpty.length === 4 && !forceOverwrite) { console.log( `\\n🆕 No skill files found — generating all 4 from scratch.\\n`, ); } else if (!forceOverwrite) { const summary = this.formatSkillSummary(skillInfos); console.log( `\\n🔄 Mixed skill state (${summary}) — auto-improving without prompting.\\n`, ); } let project: ScannedProject; if (preloadedProject) { project = preloadedProject; logDebug( `Reusing pre-loaded project scan: ${project.codeFiles.length} source file(s).`, ); console.log( `ℹ️ Reusing project scan: ${project.codeFiles.length} source file(s), ` + `${project.sampleSources.length} source sample(s), ` + `${project.sampleTests.length} test sample(s).`, ); } else { onProgress(\"🔍 Scanning project…\"); project = await this.scanner.scan(baseDir); onProgress( `✅ Project scanned: ${project.codeFiles.length} source files, ` + `${project.sampleSources.length} samples, ${project.sampleTests.length} test samples.`, ); } const prompt = forceOverwrite ? this.buildFreshSkillsPrompt(project) : this.buildSkillsPrompt(project, skillInfos); logDebug(`Skills prompt length: ${prompt.length} chars`); const actionVerb = hasContent.length > 0 && !forceOverwrite ? \"Improving\" : \"Generating\"; onProgress(`🤖 ${actionVerb} skills with Gemini Pro…`); const skillFiles = await this.aiProvider.generateSkills(prompt); onProgress(`✅ Skills ${actionVerb.toLowerCase()}d by Gemini Pro.`); onProgress(\"💾 Writing .agents/skills/ files…\"); const writeResults: string[] = []; let written = 0; let skipped = 0; for (const skillName of SKILL_NAMES) { const content = skillFiles[skillName]; if (!content?.trim()) { logDebug( `Gemini returned empty content for skill: ${skillName} — skipping.`, ); skipped++; continue; } const info = skillInfos.find((i) => i.skillName === skillName)!; const action = info.status === \"has-content\" && !forceOverwrite ? \"⬆️ improved\" : \"🆕 generated\"; try { const targetPath = path.join(skillsDir, skillName, \"SKILL.md\"); await nodefs.mkdir(path.join(skillsDir, skillName), { recursive: true, }); await nodefs.writeFile(targetPath, content, \"utf-8\"); writeResults.push(` ${action} ${skillName}/SKILL.md`); written++; logDebug(`Wrote .agents/skills/${skillName}/SKILL.md`); } catch (e: any) { logDebug(`Failed to write ${skillName}: ${e.message}`); skipped++; } } if (written === 0) { throw new Error(\"Gemini returned empty content for all skills.\"); } const relSkillsDir = path.relative(process.cwd(), skillsDir) || \".agents/skills\"; const generated = skillInfos.filter( (i) => i.status !== \"has-content\" || forceOverwrite, ).length; const improved = skillInfos.filter( (i) => i.status === \"has-content\" && !forceOverwrite, ).length; const summaryLines: string[] = []; if (generated > 0) summaryLines.push(` Generated (new/empty): ${generated} skill(s)`); if (improved > 0) summaryLines.push( ` Improved (preserved + extended): ${improved} skill(s)`, ); if (skipped > 0) summaryLines.push(` Skipped (no output): ${skipped} skill(s)`); console.log(` ╔══════════════════════════════════════════════════════════════╗ ║ 🎉 Skills Update Complete! ║ ╠══════════════════════════════════════════════════════════════╣ ║ Skill directory: ${relSkillsDir}/ ${summaryLines.map((l) => `║ ${l}`).join(\"\\n\")} ║ ║ • coding-standards/SKILL.md ║ • testing-philosophy/SKILL.md ║ • ci-cd-requirements/SKILL.md ║ • architecture-patterns/SKILL.md ║ ║ All skills auto-injected into every code review. ║ ╚══════════════════════════════════════════════════════════════╝ `); } private buildSkillsPrompt( project: ScannedProject, skillInfos: SkillFileInfo[], ): string { const sections: string[] = []; sections.push(BUILD_SKILLS_SYSTEM_PROMPT); sections.push(...this.buildProjectContextSections(project)); sections.push(this.buildPerSkillInstructions(skillInfos)); return sections.join(\"\\n\\n\"); } private buildFreshSkillsPrompt(project: ScannedProject): string { const sections: string[] = []; sections.push(BUILD_FRESH_SKILLS_PROMPT); sections.push(...this.buildProjectContextSections(project)); return sections.join(\"\\n\\n\"); } private buildProjectContextSections(project: ScannedProject): string[] { const sections: string[] = []; if (project.packageJson) { sections.push( `## package.json\\n\\`\\`\\`json\\n${project.packageJson}\\n\\`\\`\\``, ); } sections.push( `## Directory Structure (depth 3)\\n\\`\\`\\`\\n${project.directoryTree}\\n\\`\\`\\``, ); if (project.codeFiles.length > 0) { const manifest = project.codeFiles .map((f) => ` ${f.filePath}`) .join(\"\\n\"); sections.push( `## Complete Source File List (${project.codeFiles.length} files)\\n\\`\\`\\`\\n${manifest}\\n\\`\\`\\``, ); } if (Object.keys(project.configFiles).length > 0) { const cf = Object.entries(project.configFiles) .map(([k, v]) => `### ${k}\\n\\`\\`\\`\\n${v}\\n\\`\\`\\``) .join(\"\\n\\n\"); sections.push(`## Configuration Files\\n${cf}`); } if (Object.keys(project.ciFiles).length > 0) { const ci = Object.entries(project.ciFiles) .map(([n, v]) => `### ${n}\\n\\`\\`\\`yaml\\n${v}\\n\\`\\`\\``) .join(\"\\n\\n\"); sections.push(`## CI/CD Pipelines\\n${ci}`); } if (project.sampleSources.length > 0) { const sources = project.sampleSources .map((s) => `### ${s.relPath}\\n\\`\\`\\`\\n${s.content}\\n\\`\\`\\``) .join(\"\\n\\n\"); sections.push( `## Representative Business-Logic Files (${project.sampleSources.length})\\n${sources}`, ); } if (project.sampleTests.length > 0) { const tests = project.sampleTests .map((t) => `### ${t.relPath}\\n\\`\\`\\`\\n${t.content}\\n\\`\\`\\``) .join(\"\\n\\n\"); sections.push( `## Representative Test Files (${project.sampleTests.length})\\n${tests}`, ); } return sections; } private buildPerSkillInstructions(skillInfos: SkillFileInfo[]): string { const lines: string[] = [ \"## Per-Skill Instructions\", \"\", \"For each skill key in your JSON response, follow the instruction below exactly.\", \"\", ]; for (const info of skillInfos) { if (info.status === \"has-content\") { const cap = info.existingContent!.slice(0, MAX_EXISTING_CONTENT_CHARS); const truncated = info.existingContent!.length > MAX_EXISTING_CONTENT_CHARS ? \"\\n…[truncated for brevity]\" : \"\"; lines.push( `### ${info.skillName} → ⬆️ IMPROVE (merge existing + project scan)`, \"\", \"**STRICT MERGE RULES:**\", \"1. Copy EVERY existing rule, pattern, and convention into the output verbatim — do NOT omit, reword, or weaken any.\", \"2. Identify gaps: what patterns does the project scan reveal that the existing skill does NOT yet cover?\", \"3. Append NEW sections/rules for those gaps only.\", \"4. Do NOT duplicate rules that already exist.\", \"5. The YAML frontmatter may be updated (better description) but the `name` key must stay unchanged.\", \"\", \"**Existing content to preserve and extend:**\", \"```markdown\", cap + truncated, \"```\", \"\", ); } else { const reason = info.status === \"empty\" ? \"⬜ EMPTY file\" : \"🆕 MISSING file\"; lines.push( `### ${info.skillName} → ${reason} — GENERATE from scratch`, \"\", \"Generate a comprehensive, project-specific SKILL.md based on everything observed in the project scan above.\", \"Be specific: reference actual file names, detected libraries, test runner, CI steps, and folder patterns.\", \"\", ); } } return lines.join(\"\\n\"); } private async analyzeExistingSkills( skillsDir: string, ): Promise<SkillFileInfo[]> { const results: SkillFileInfo[] = []; for (const skillName of SKILL_NAMES) { const filePath = path.join(skillsDir, skillName, \"SKILL.md\"); let status: SkillStatus = \"missing\"; let existingContent: string | undefined; try { const raw = await nodefs.readFile(filePath, \"utf-8\"); const trimmed = raw.trim(); if (trimmed.length === 0) { status = \"empty\"; } else { status = \"has-content\"; existingContent = trimmed; } } catch { status = \"missing\"; } results.push({ skillName, filePath, status, existingContent }); } return results; } private formatSkillSummary(infos: SkillFileInfo[]): string { const missing = infos.filter((i) => i.status === \"missing\").length; const empty = infos.filter((i) => i.status === \"empty\").length; const hasContent = infos.filter((i) => i.status === \"has-content\").length; const parts: string[] = []; if (missing + empty > 0) parts.push(`${missing + empty} to generate`); if (hasContent > 0) parts.push(`${hasContent} to improve`); return parts.join(\", \") || \"nothing to do\"; } private async askYesNo(question: string): Promise<boolean> { const rl = readline.createInterface({ input: process.stdin, output: process.stdout, }); return new Promise((resolve) => { rl.question(`${question} [y/N] `, (answer) => { rl.close(); resolve(answer.trim().toLowerCase() === \"y\"); }); }); } }\n```\n\n### src\\application\\RunCodeReview.ts\n```ts\nexport interface IFeedbackManager { readonly hasFeedback: boolean; buildSystemPromptSuffix(): string; isFalsePositive(file: string, line: number, snippet: string): boolean; } export interface RunCodeReviewInput { baseDir: string; preloadedProject?: ScannedProject; forceLogin?: boolean; logDebug: (msg: string) => void; onProgress?: (message: string) => void; } export interface RunCodeReviewOutput { report: ProjectReport; outputDir: string; } interface CacheState { fileHashes: Record<string, string>; iacFileHashes?: Record<string, string>; manifestHashes?: Record<string, string>; findings: ReviewFinding[]; secretFindings?: unknown[]; infraFindings?: unknown[]; isPublicFacing?: boolean; executiveSummary?: unknown; namingConventionScore?: number; solidPrinciplesScore?: number; codeDuplicationPercentage?: number; cyclomaticComplexity?: number; maintainabilityIndex?: number; timingStats?: TimingStats; } export class RunCodeReview { constructor( private readonly scanner: IFileScanner, private readonly aiProvider: IAiProvider, private readonly auditors: IProjectAuditor[], private readonly skillRepository: ISkillRepository, private readonly reportBuilder: IReportBuilder, private readonly feedbackManager: IFeedbackManager, ) {} async execute(input: RunCodeReviewInput): Promise<RunCodeReviewOutput> { const { baseDir, preloadedProject, logDebug, onProgress = () => {}, } = input; const t0 = performance.now(); onProgress(\"Scanning project (code, IaC, configs)...\"); logDebug(`Scanning base directory: ${baseDir}`); const scanStart = performance.now(); const project: ScannedProject = preloadedProject ? (logDebug(\"Reusing pre-loaded ScannedProject.\"), preloadedProject) : await this.scanner.scan(baseDir); const { codeFiles } = project; if (codeFiles.length === 0) { throw new NoSourceFilesError(`No source files found in ${baseDir}.`); } logDebug(`Scanned: ${codeFiles.length} source file(s).`); const outputDir = path.join(baseDir, \"gemini-code-reviewer\"); await nodefs.mkdir(outputDir, { recursive: true }); const statePath = path.join(outputDir, \".gemini-code-reviewer.json\"); let previousState: CacheState | null = null; try { previousState = JSON.parse( await nodefs.readFile(statePath, \"utf-8\"), ) as CacheState; } catch { } const currentFileHashes: Record<string, string> = {}; const changedFiles = codeFiles.filter((f) => { const hash = crypto.createHash(\"sha256\").update(f.content).digest(\"hex\"); currentFileHashes[f.filePath] = hash; return previousState?.fileHashes?.[f.filePath] !== hash; }); const unchangedFilePaths = codeFiles .map((f) => f.filePath) .filter((p) => !changedFiles.find((cf) => cf.filePath === p)); const oldFindings: ReviewFinding[] = previousState?.findings ? (previousState.findings as ReviewFinding[]).filter((f) => unchangedFilePaths.includes(f.file), ) : []; if (changedFiles.length === 0 && previousState) { logDebug(\"No file changes detected — returning cached report.\"); return { report: this.buildReportFromCache(previousState, currentFileHashes), outputDir, }; } logDebug(`Changed files: ${changedFiles.length}`); const scanMs = performance.now() - scanStart; logDebug( `[timing] scan: ${(scanMs / 1000).toFixed(2)}s (${codeFiles.length} files, ${changedFiles.length} changed)`, ); onProgress(\"Loading skills context...\"); const skillsContext = await this.skillRepository.loadSkillsContext(baseDir); logDebug(`Skills context: ${skillsContext.length} chars.`); const feedbackSuffix = this.feedbackManager.buildSystemPromptSuffix(); void feedbackSuffix; const auditStart = performance.now(); const auditContext: AuditContext = { codeFiles: changedFiles, iacFiles: project.iacFiles, dependencyManifests: project.dependencyManifests, isPublicFacing: project.isPublicFacing, logDebug, }; let combinedAuditResult: AuditResult = { codeFindings: [], secretFindings: [], infraFindings: [], scannedFiles: [], }; for (const auditor of this.auditors) { onProgress(`Running ${auditor.name}...`); logDebug(`Running auditor: ${auditor.name}`); try { const result = await auditor.audit(auditContext); combinedAuditResult = this.mergeAuditResults( combinedAuditResult, result, ); } catch (e: unknown) { logDebug( `Auditor \"${auditor.name}\" failed: ${e instanceof Error ? e.message : String(e)}`, ); } } const secretFindings = combinedAuditResult.secretFindings ?? []; const infraScannedFiles = combinedAuditResult.scannedFiles ?? []; const isPublicFacing = combinedAuditResult.isPublicFacing ?? project.isPublicFacing; const auditMs = performance.now() - auditStart; logDebug( `[timing] audit+review: ${(auditMs / 1000).toFixed(2)}s` + ` (${secretFindings.length} secret(s),` + ` ${combinedAuditResult.codeFindings?.length ?? 0} code finding(s),` + ` ${combinedAuditResult.infraFindings?.length ?? 0} infra finding(s))`, ); const newCodeFindings = combinedAuditResult.codeFindings ?? []; for (const finding of newCodeFindings) { finding.riskMultiplier = this.getRiskMultiplier(finding.file); const fileMatch = changedFiles.find((f) => f.filePath === finding.file); if (fileMatch && finding.snippet) { finding.line = this.resolveLineNumber( fileMatch.originalContent, finding.snippet, ); } } const allCodeFindings: ReviewFinding[] = [ ...newCodeFindings, ...oldFindings, ]; const filteredFindings = allCodeFindings.filter( (f) => !this.feedbackManager.isFalsePositive(f.file, f.line, f.snippet ?? \"\"), ); const allInfraFindings: InfraFindingEntity[] = [ ...(combinedAuditResult.infraFindings ?? []), ]; const summaryStart = performance.now(); onProgress(\"Generating Executive Summary…\"); this.reportBuilder.addAiFindings(filteredFindings); this.reportBuilder.addSecretResults(secretFindings); this.reportBuilder.addInfrastructureResults({ findings: allInfraFindings, isPublicFacing, scannedFiles: infraScannedFiles, }); this.reportBuilder.setAiScores(combinedAuditResult.benchmarkScores ?? {}); if (combinedAuditResult.benchmarks) { this.reportBuilder.setLocalBenchmarks(combinedAuditResult.benchmarks); } const previewScore = this.reportBuilder.calculateFinalScore(); const executiveSummary = await this.aiProvider.generateExecutiveSummary({ overallScore: previewScore, totalCodeFindings: filteredFindings.length, totalSecrets: secretFindings.length, totalInfraFindings: allInfraFindings.length, isPublicFacing, sampleFiles: codeFiles.slice(0, 10).map((f) => f.filePath), topHighFindings: filteredFindings .filter((f) => f.priority === \"high\") .slice(0, 10) .map( (f) => `- [${f.file}:${f.line}] ${f.suggestion?.slice(0, 120) ?? \"\"}`, ), topInfraFindings: allInfraFindings .filter((f) => f.severity === \"critical\" || f.severity === \"high\") .slice(0, 5) .map( (f) => `- [${f.file}] ${f.title}: ${f.description?.slice(0, 100) ?? \"\"}`, ), }); if (executiveSummary) this.reportBuilder.setExecutiveSummary(executiveSummary); const finalScore = this.reportBuilder.calculateFinalScore(); const summaryMs = performance.now() - summaryStart; logDebug(`[timing] summary: ${(summaryMs / 1000).toFixed(2)}s`); const totalMs = performance.now() - t0; const timingStats: TimingStats = { totalMs: Math.round(totalMs), scanMs: Math.round(scanMs), auditMs: Math.round(auditMs), summaryMs: Math.round(summaryMs), timestamp: new Date().toISOString(), }; logDebug( \"[timing] ────────────────────────────────────────\\n\" + ` scan : ${(scanMs / 1000).toFixed(2)}s\\n` + ` audit+review : ${(auditMs / 1000).toFixed(2)}s ← auditInfra → [2s] → deepReview\\n` + ` summary : ${(summaryMs / 1000).toFixed(2)}s\\n` + ` ────────────────────────────────────────\\n` + ` TOTAL : ${(totalMs / 1000).toFixed(2)}s | score: ${finalScore}/100`, ); this.reportBuilder.setTimingStats(timingStats); const currentIacHashes: Record<string, string> = {}; for (const [name, content] of Object.entries(project.iacFiles)) { currentIacHashes[name] = crypto .createHash(\"sha256\") .update(content) .digest(\"hex\"); } const currentManifestHashes: Record<string, string> = {}; for (const [name, content] of Object.entries(project.dependencyManifests)) { currentManifestHashes[name] = crypto .createHash(\"sha256\") .update(content) .digest(\"hex\"); } const cacheState: CacheState = { fileHashes: currentFileHashes, iacFileHashes: currentIacHashes, manifestHashes: currentManifestHashes, findings: filteredFindings, secretFindings, infraFindings: allInfraFindings, isPublicFacing, executiveSummary, namingConventionScore: combinedAuditResult.benchmarkScores?.namingConventionScore, solidPrinciplesScore: combinedAuditResult.benchmarkScores?.solidPrinciplesScore, codeDuplicationPercentage: combinedAuditResult.benchmarkScores?.codeDuplicationPercentage, cyclomaticComplexity: combinedAuditResult.benchmarkScores?.cyclomaticComplexity, maintainabilityIndex: combinedAuditResult.benchmarkScores?.maintainabilityIndex, timingStats, }; try { await nodefs.writeFile( statePath, JSON.stringify(cacheState, null, 2), \"utf-8\", ); } catch (err: unknown) { logDebug( `Could not save cache: ${err instanceof Error ? err.message : String(err)}`, ); } const report: ProjectReport = { codeFindings: filteredFindings, secretFindings, infraFindings: allInfraFindings, isPublicFacing, infraScannedFiles, executiveSummary, aiSubScores: combinedAuditResult.benchmarkScores ?? {}, localBenchmarks: combinedAuditResult.benchmarks, fileHashes: currentFileHashes, timingStats, }; logDebug(`Review complete. Final score: ${finalScore}/100.`); return { report, outputDir }; } private mergeAuditResults( base: AuditResult, addition: AuditResult, ): AuditResult { return { codeFindings: [ ...(base.codeFindings ?? []), ...(addition.codeFindings ?? []), ], secretFindings: [ ...(base.secretFindings ?? []), ...(addition.secretFindings ?? []), ], infraFindings: [ ...(base.infraFindings ?? []), ...(addition.infraFindings ?? []), ], scannedFiles: [ ...(base.scannedFiles ?? []), ...(addition.scannedFiles ?? []), ], isPublicFacing: addition.isPublicFacing ?? base.isPublicFacing, benchmarkScores: addition.benchmarkScores ? { ...(base.benchmarkScores ?? {}), ...addition.benchmarkScores } : base.benchmarkScores, benchmarks: addition.benchmarks ?? base.benchmarks, }; } private resolveLineNumber(originalContent: string, snippet: string): number { if (!snippet || typeof snippet !== \"string\") return 1; const lines = originalContent.split(\"\\n\"); const normSnippet = snippet.replace(/\\s+/g, \"\"); if (!normSnippet) return 1; let normContent = \"\"; const indexToLine: number[] = []; for (let j = 0; j < lines.length; j++) { const stripped = lines[j].replace(/\\s+/g, \"\"); normContent += stripped; for (let k = 0; k < stripped.length; k++) indexToLine.push(j + 1); } const matchIndex = normContent.indexOf(normSnippet); return matchIndex !== -1 ? (indexToLine[matchIndex] ?? 1) : 1; } private getRiskMultiplier(filePath: string): number { const parts = filePath.replace(/\\\\/g, \"/\").toLowerCase().split(\"/\"); const PUBLIC_FACING = [ \"controller\", \"controllers\", \"route\", \"routes\", \"api\", \"endpoint\", \"handler\", \"resolver\", \"gateway\", ]; const BUSINESS = [ \"service\", \"services\", \"manager\", \"usecase\", \"domain\", \"repository\", ]; const TEST = [\"spec\", \"test\", \"__tests__\"]; if (TEST.some((s) => parts.includes(s))) return 0.3; if (PUBLIC_FACING.some((s) => parts.includes(s))) return 2.0; if (BUSINESS.some((s) => parts.includes(s))) return 1.3; return 1.0; } private buildReportFromCache( state: CacheState, currentFileHashes: Record<string, string>, ): ProjectReport { return { codeFindings: (state.findings as ReviewFinding[]) ?? [], secretFindings: (state.secretFindings as SecretFindingEntity[]) ?? [], infraFindings: (state.infraFindings as InfraFindingEntity[]) ?? [], isPublicFacing: state.isPublicFacing ?? false, infraScannedFiles: [], executiveSummary: state.executiveSummary as ProjectReport[\"executiveSummary\"], aiSubScores: { namingConventionScore: state.namingConventionScore, solidPrinciplesScore: state.solidPrinciplesScore, codeDuplicationPercentage: state.codeDuplicationPercentage, cyclomaticComplexity: state.cyclomaticComplexity, maintainabilityIndex: state.maintainabilityIndex, }, fileHashes: currentFileHashes, timingStats: state.timingStats, }; } }\n```\n\n### src\\core\\interfaces\\IAiProvider.ts\n```ts\nexport interface ProjectReviewRequest { codePayload: string; skillsContext?: string; feedbackSuffix?: string; } export interface InfraReviewRequest { iacFiles: Record<string, string>; dependencyManifests: Record<string, string>; projectTree: string; } export interface ProjectReviewResult { codeFindings: ReviewFinding[]; subScores: AiSubScores; } export interface InfraReviewResult { infraFindings: InfraFindingEntity[]; } export interface ExecutiveSummaryInput { overallScore: number; totalCodeFindings: number; totalSecrets: number; totalInfraFindings: number; isPublicFacing: boolean; sampleFiles: string[]; topHighFindings: string[]; topInfraFindings: string[]; } export interface FileMetadata { path: string; extension: string; bytes: number; lines: number; } export interface ScoredFile extends FileMetadata { weight: number; reason: string; ignore_in_deep_review: boolean; } export interface InfraAuditResult { files: ScoredFile[]; summary: { total_files: number; total_lines: number; high_impact_files: string[]; ignored_patterns_detected: string[]; }; } export interface DeepReviewIssue { severity: \"HIGH\" | \"MEDIUM\" | \"LOW\"; type: \"SECURITY\" | \"RELIABILITY\" | \"MAINTAINABILITY\" | \"PERFORMANCE\" | \"CONFIG\"; description: string; evidence: string; suggested_fix: string; } export interface DeepReviewedFile { path: string; overall_assessment: string; complexity_score: number; issues: DeepReviewIssue[]; } export interface RepoLevelFinding { rank: number; title: string; detail: string; recommended_action: string; } export interface DeepReviewResult { reviewed_files: DeepReviewedFile[]; repo_level_findings: RepoLevelFinding[]; } export interface DeepReviewRequest { fileContents: Record<string, string>; importContents: Record<string, string>; templateContents: Record<string, string>; } export interface InfraAuditRequest { packageJson: string; infraFiles: Record<string, string>; fileTree: FileMetadata[]; } export interface IAiProvider { reviewProject(request: ProjectReviewRequest): Promise<ProjectReviewResult>; reviewInfrastructure(request: InfraReviewRequest): Promise<InfraReviewResult>; generateExecutiveSummary( input: ExecutiveSummaryInput, ): Promise<ExecutiveSummary | undefined>; generateSkills(prompt: string): Promise<Record<string, string>>; auditInfra(request: InfraAuditRequest): Promise<InfraAuditResult>; deepReview(request: DeepReviewRequest): Promise<DeepReviewResult>; }\n```\n\n### src\\core\\interfaces\\IFileScanner.ts\n```ts\nexport interface ScannedProject { codeFiles: CodeSegment[]; iacFiles: Record<string, string>; dependencyManifests: Record<string, string>; configFiles: Record<string, string>; ciFiles: Record<string, string>; sampleSources: Array<{ relPath: string; content: string }>; sampleTests: Array<{ relPath: string; content: string }>; packageJson?: string; directoryTree: string; isPublicFacing: boolean; } export interface IFileScanner { scan(baseDir: string): Promise<ScannedProject>; }\n```\n\n### src\\core\\interfaces\\IProjectAuditor.ts\n```ts\nexport interface AuditContext { codeFiles: CodeSegment[]; iacFiles: Record<string, string>; dependencyManifests: Record<string, string>; isPublicFacing: boolean; logDebug?: (msg: string) => void; } export interface AuditResult { codeFindings?: ReviewFinding[]; secretFindings?: SecretFindingEntity[]; infraFindings?: InfraFindingEntity[]; scannedFiles?: string[]; isPublicFacing?: boolean; benchmarks?: CodeBenchmarkResults; benchmarkScores?: import(\"../entities/ProjectReport.js\").AiSubScores; } export interface IProjectAuditor { readonly name: string; audit(context: AuditContext): Promise<AuditResult>; }\n```\n\n### src\\core\\interfaces\\IReportBuilder.ts\n```ts\nexport interface InfrastructureResults { findings: InfraFindingEntity[]; isPublicFacing: boolean; scannedFiles: string[]; } export interface IReportBuilder { addAiFindings(findings: ReviewFinding[]): void; addInfrastructureResults(results: InfrastructureResults): void; addSecretResults(secrets: SecretFindingEntity[]): void; setExecutiveSummary(summary: ExecutiveSummary): void; setAiScores(scores: AiSubScores): void; setLocalBenchmarks(benchmarks: CodeBenchmarkResults): void; setTimingStats(stats: TimingStats): void; calculateFinalScore(): number; build(useChalk?: boolean): string; }\n```\n\n### src\\infrastructure\\auth\\GoogleAuth.ts\n```ts\ninterface OAuthCoreCredentials { clientId: string; clientSecret: string; } let _cachedCoreCredentials: OAuthCoreCredentials | null = null; function getCoreOAuthCredentials(): OAuthCoreCredentials { if (_cachedCoreCredentials) return _cachedCoreCredentials; const require = createRequire(import.meta.url); const modulePath = require.resolve(\"@google/gemini-cli-core/dist/src/code_assist/oauth2.js\"); const source = readFileSync(modulePath, \"utf-8\"); const idMatch = source.match(/OAUTH_CLIENT_ID\\s*=\\s*['\"]([^'\"]+)['\"]/); const secretMatch = source.match( /OAUTH_CLIENT_SECRET\\s*=\\s*['\"]([^'\"]+)['\"]/, ); if (!idMatch || !secretMatch) { throw new Error( \"Could not extract OAuth credentials from @google/gemini-cli-core.\", ); } _cachedCoreCredentials = { clientId: idMatch[1], clientSecret: secretMatch[1], }; return _cachedCoreCredentials; } async function loadCachedCredentials( logDebug: (msg: string) => void, ): Promise<Record<string, unknown> | null> { const credsPath = Storage.getOAuthCredsPath(); try { const raw = await fs.readFile(credsPath, \"utf-8\"); const parsed = JSON.parse(raw); logDebug(`Loaded cached OAuth credentials from ${credsPath}`); return parsed; } catch { logDebug(`No cached credentials found at ${credsPath}`); return null; } } async function saveCachedCredentials( credentials: Record<string, unknown>, logDebug: (msg: string) => void, ): Promise<void> { const credsPath = Storage.getOAuthCredsPath(); const dir = Storage.getGlobalGeminiDir(); try { await fs.mkdir(dir, { recursive: true }); await fs.writeFile(credsPath, JSON.stringify(credentials, null, 2), { mode: 0o600, }); logDebug(`Saved OAuth credentials to ${credsPath}`); } catch (e: any) { logDebug(`Warning: could not persist credentials: ${e.message}`); } } async function browserOAuthFlow( logDebug: (msg: string) => void, ): Promise<OAuth2Client> { const { clientId, clientSecret } = getCoreOAuthCredentials(); const client = new OAuth2Client(clientId, clientSecret); const port: number = await getAvailablePort(); const host = process.env[\"OAUTH_CALLBACK_HOST\"] || \"127.0.0.1\"; const redirectUri = `http://127.0.0.1:${port}/oauth2callback`; const state = crypto.randomBytes(32).toString(\"hex\"); const authUrl = client.generateAuthUrl({ redirect_uri: redirectUri, access_type: \"offline\", scope: OAUTH_SCOPE, state, }); return new Promise((resolve, reject) => { const server = http.createServer(async (req, res) => { try { if (req.url!.indexOf(\"/oauth2callback\") === -1) { res.writeHead(HTTP_REDIRECT, { Location: SIGN_IN_FAILURE_URL }); res.end(); reject(new Error(\"OAuth callback not received.\")); return; } const qs = new url.URL(req.url!, \"http://127.0.0.1:3000\").searchParams; if (qs.get(\"error\")) { res.writeHead(HTTP_REDIRECT, { Location: SIGN_IN_FAILURE_URL }); res.end(); reject(new Error(`Google OAuth error: ${qs.get(\"error\")}`)); } else if (qs.get(\"state\") !== state) { res.end(\"State mismatch. Possible CSRF attack\"); reject(new Error(\"OAuth state mismatch. Possible CSRF attack.\")); } else if (qs.get(\"code\")) { try { const { tokens } = await client.getToken({ code: qs.get(\"code\")!, redirect_uri: redirectUri, }); client.setCredentials(tokens); await saveCachedCredentials(tokens as any, logDebug); res.writeHead(HTTP_REDIRECT, { Location: SIGN_IN_SUCCESS_URL }); res.end(); resolve(client); } catch (error: any) { res.writeHead(HTTP_REDIRECT, { Location: SIGN_IN_FAILURE_URL }); res.end(); reject( new Error( `Failed to exchange short-lived code: ${error.message}`, ), ); } } else { reject(new Error(\"No authorization code received.\")); } } catch (e: any) { reject(e); } finally { server.close(); } }); server.listen(port, host, async () => { logDebug(`Launching browser OAuth: ${authUrl}`); console.log(`\\nOpening browser for Google authentication...\\n`); try { await open(authUrl); } catch (e) { console.log(`\\nCould not open browser. Visiter:\\n\\n${authUrl}\\n`); } }); server.on(\"error\", (err) => { reject(err); }); }); } async function clearCachedCredentials( logDebug: (msg: string) => void, ): Promise<void> { const credsPath = Storage.getOAuthCredsPath(); try { await fs.rm(credsPath, { force: true }); logDebug(`Cleared cached credentials at ${credsPath}`); } catch (e: any) { logDebug(`Could not clear credentials: ${e.message}`); } } export async function authenticate( logDebug: (msg: string) => void, forceLogin: boolean = false, ): Promise<OAuth2Client> { const { clientId, clientSecret } = getCoreOAuthCredentials(); if (!forceLogin) { const cached = await loadCachedCredentials(logDebug); if (cached) { const client = new OAuth2Client(clientId, clientSecret); client.setCredentials(cached as any); try { const { token } = await client.getAccessToken(); if (token) { logDebug(\"Reused cached credentials successfully.\"); return client; } } catch (e: any) { logDebug(`Cached credentials invalid: ${e.message}`); } } } else { logDebug(\"--login flag set, clearing cached credentials.\"); await clearCachedCredentials(logDebug); } logDebug(\"Launching browser OAuth flow...\"); return browserOAuthFlow(logDebug); } async function simpleCodeAssistPost( method: string, body: unknown, token: string, logDebug: (msg: string) => void, ): Promise<any> { const endpoint = `${CODE_ASSIST_BASE_URL}:${method}`; logDebug(`POST ${endpoint}`); const res = await fetch(endpoint, { method: \"POST\", headers: { Authorization: `Bearer ${token}`, \"Content-Type\": \"application/json\", }, body: JSON.stringify(body), }); if (!res.ok) throw new Error(`HTTP ${res.status}`); return res.json(); } export async function resolveCloudProject( accessToken: string, logDebug: (msg: string) => void, ): Promise<string> { const envProjectId = process.env.GOOGLE_CLOUD_PROJECT || process.env.GOOGLE_CLOUD_PROJECT_ID || undefined; logDebug( `Calling loadCodeAssist to resolve Cloud AI Companion project (env hint: ${ envProjectId ?? \"none\" })`, ); let cloudaicompanionProject: string | undefined; try { const loadRes = await simpleCodeAssistPost( \"loadCodeAssist\", { cloudaicompanionProject: envProjectId, metadata: { ideType: \"IDE_UNSPECIFIED\", platform: \"PLATFORM_UNSPECIFIED\", pluginType: \"GEMINI\", duetProject: envProjectId, }, }, accessToken, logDebug, ); cloudaicompanionProject = (loadRes?.cloudaicompanionProject as string | undefined) ?? envProjectId; logDebug(`Resolved project: ${cloudaicompanionProject}`); } catch (e: any) { logDebug( `loadCodeAssist failed: ${e.message}. Falling back to env project.`, ); cloudaicompanionProject = envProjectId; } if (!cloudaicompanionProject) { throw new Error( \"Could not determine project. Set GOOGLE_CLOUD_PROJECT in your .env file.\", ); } return cloudaicompanionProject; }\n```\n\n### src\\infrastructure\\benchmark\\CodeBenchmarkAuditor.ts\n```ts\nexport class CodeBenchmarkAuditor implements IProjectAuditor { readonly name = \"Code Quality Benchmark (local — complexity, duplication, naming)\"; private readonly complexityAnalyzer = new ComplexityAnalyzer(); private readonly duplicationAnalyzer = new DuplicationAnalyzer(); private readonly namingAnalyzer = new NamingConventionAnalyzer(); async audit(context: AuditContext): Promise<AuditResult> { const { codeFiles, logDebug = () => {} } = context; logDebug(`[CodeBenchmarkAuditor] Analysing ${codeFiles.length} file(s)...`); const complexity = this.complexityAnalyzer.analyze(codeFiles); const duplication = this.duplicationAnalyzer.analyze(codeFiles); const naming = this.namingAnalyzer.analyze(codeFiles); logDebug( `[CodeBenchmarkAuditor] Done:` + ` CC avg=${complexity.averageComplexity} max=${complexity.maxComplexity}` + ` hotspots=${complexity.hotspots.length} |` + ` dup=${duplication.duplicationPercentage}%` + ` (${duplication.duplicatedLines}/${duplication.totalLines} lines) |` + ` naming score=${naming.score}/100` + ` violations=${naming.totalViolations}/${naming.totalChecked}`, ); const benchmarks: CodeBenchmarkResults = { complexity, duplication, naming, timestamp: new Date().toISOString(), }; const codeFindings: ReviewFinding[] = []; for (const hotspot of complexity.hotspots) { codeFindings.push({ file: hotspot.filePath, line: hotspot.startLine, snippet: hotspot.functionName, suggestion: `Cyclomatic complexity exceeds threshold (10). Consider breaking this function into smaller, more manageable units.`, category: \"Complexity\", priority: hotspot.complexity > 20 ? \"high\" : \"medium\", }); } for (const violation of naming.violations) { codeFindings.push({ file: violation.filePath, line: violation.line, snippet: violation.actual, suggestion: `Naming violation: identifier does not follow the ${violation.kind} convention for this project.`, category: \"Naming\", priority: \"low\", }); } return { codeFindings, secretFindings: [], infraFindings: [], scannedFiles: codeFiles.map((f) => f.filePath), benchmarks, benchmarkScores: { namingConventionScore: naming.score, codeDuplicationPercentage: duplication.duplicationPercentage, cyclomaticComplexity: complexity.averageComplexity, maintainabilityIndex: Math.max( 0, Math.min(100, 100 - complexity.averageComplexity * 5), ), solidPrinciplesScore: undefined, }, }; } }\n```\n\n### src\\infrastructure\\benchmark\\ComplexityAnalyzer.ts\n```ts\nconst HIGH_COMPLEXITY_THRESHOLD = 10; const FUNCTION_START_RE = /(?:^|\\s)(?:async\\s+)?(?:function\\s+([\\w$]+)|(?:public|private|protected|static|override|async|\\s)*([\\w$]+)\\s*(?:<[^>]*>)?\\s*\\([^)]*\\)\\s*(?::[^{]*)?\\{|(?:const|let|var)\\s+([\\w$]+)\\s*=\\s*(?:async\\s+)?(?:\\([^)]*\\)|[\\w$]+)\\s*=>\\s*\\{)/; const DECISION_POINT_RE = /\\b(?:if|else\\s+if|for|while|do|switch|case|catch)\\b|\\?\\?|\\?(?!:)|&&|\\|\\|/g; export class ComplexityAnalyzer { analyze(files: CodeSegment[]): ComplexityReport { const allFunctions: FunctionComplexity[] = []; for (const file of files) { const fileFunctions = this.analyzeFile(file); allFunctions.push(...fileFunctions); } if (allFunctions.length === 0) { return { averageComplexity: 1, maxComplexity: 1, hotspots: [], totalFunctions: 0, }; } const total = allFunctions.reduce((sum, f) => sum + f.complexity, 0); const max = Math.max(...allFunctions.map((f) => f.complexity)); const hotspots = allFunctions .filter((f) => f.complexity > HIGH_COMPLEXITY_THRESHOLD) .sort((a, b) => b.complexity - a.complexity) .slice(0, 20); return { averageComplexity: Math.round((total / allFunctions.length) * 10) / 10, maxComplexity: max, hotspots, totalFunctions: allFunctions.length, }; } private analyzeFile(file: CodeSegment): FunctionComplexity[] { const lines = file.originalContent.split(\"\\n\"); const functions: FunctionComplexity[] = []; let inFunction = false; let currentName = \"(anonymous)\"; let currentStart = 1; let currentCC = 1; let braceDepth = 0; let functionBraceStart = 0; for (let i = 0; i < lines.length; i++) { const line = lines[i]; const lineNum = i + 1; const stripped = this.stripStringsAndComments(line); if (!inFunction) { const match = FUNCTION_START_RE.exec(stripped); if (match) { inFunction = true; currentName = match[1] ?? match[2] ?? match[3] ?? \"(anonymous)\"; currentStart = lineNum; currentCC = 1; functionBraceStart = braceDepth; braceDepth += this.countBraceDelta(stripped); } else { braceDepth += this.countBraceDelta(stripped); if (braceDepth < 0) braceDepth = 0; } } else { const decisions = (stripped.match(DECISION_POINT_RE) ?? []).length; currentCC += decisions; const delta = this.countBraceDelta(stripped); braceDepth += delta; if (braceDepth <= functionBraceStart) { functions.push({ filePath: file.filePath, functionName: currentName, startLine: currentStart, complexity: currentCC, }); inFunction = false; braceDepth = Math.max(0, braceDepth); } } } return functions; } private countBraceDelta(line: string): number { let delta = 0; for (const ch of line) { if (ch === \"{\") delta++; else if (ch === \"}\") delta--; } return delta; } private stripStringsAndComments(line: string): string { return line .replace(/\\/\\/.*$/, \"\") .replace(/`[^`]*`/g, \"``\") .replace(/\"[^\"]*\"/g, '\"\"') .replace(/'[^']*'/g, \"''\"); } }\n```\n\n### src\\infrastructure\\benchmark\\DuplicationAnalyzer.ts\n```ts\nconst MIN_BLOCK_LINES = 6; const MAX_TOP_BLOCKS = 10; interface NormalisedLine { filePath: string; originalLine: number; text: string; } export class DuplicationAnalyzer { analyze(files: CodeSegment[]): DuplicationReport { const allLines: NormalisedLine[] = []; for (const file of files) { const fileLines = file.originalContent.split(\"\\n\"); for (let i = 0; i < fileLines.length; i++) { const normalised = this.normaliseLine(fileLines[i]); if (normalised) { allLines.push({ filePath: file.filePath, originalLine: i + 1, text: normalised, }); } } } const totalLines = allLines.length; if (totalLines < MIN_BLOCK_LINES) { return { duplicationPercentage: 0, totalLines, duplicatedLines: 0, topBlocks: [], }; } const windowMap = new Map<string, Array<{ filePath: string; startLine: number }>>( ); for (let i = 0; i <= allLines.length - MIN_BLOCK_LINES; i++) { const window = allLines.slice(i, i + MIN_BLOCK_LINES); const hash = this.hashWindow(window.map((l) => l.text)); const location = { filePath: window[0].filePath, startLine: window[0].originalLine, }; const existing = windowMap.get(hash); if (existing) { const alreadyRecorded = existing.some( (e) => e.filePath === location.filePath && e.startLine === location.startLine, ); if (!alreadyRecorded) existing.push(location); } else { windowMap.set(hash, [location]); } } const duplicateBlocks: DuplicateBlock[] = []; const duplicatedLineSet = new Set<string>(); for (const [hash, locations] of windowMap.entries()) { if (locations.length < 2) continue; duplicateBlocks.push({ hash, lines: MIN_BLOCK_LINES, locations, }); for (const loc of locations) { for (let offset = 0; offset < MIN_BLOCK_LINES; offset++) { duplicatedLineSet.add(`${loc.filePath}:${loc.startLine + offset}`); } } } const duplicatedLines = duplicatedLineSet.size; const duplicationPercentage = totalLines > 0 ? Math.round((duplicatedLines / totalLines) * 1000) / 10 : 0; const topBlocks = duplicateBlocks .sort((a, b) => b.lines * b.locations.length - a.lines * a.locations.length) .slice(0, MAX_TOP_BLOCKS); return { duplicationPercentage, totalLines, duplicatedLines, topBlocks, }; } private normaliseLine(raw: string): string { const trimmed = raw.trim(); if (!trimmed) return \"\"; if (trimmed.startsWith(\" if (trimmed.startsWith(\" private hashWindow(lines: string[]): string { const joined = lines.join(\"\\x00\"); let hash = 5381; for (let i = 0; i < joined.length; i++) { hash = ((hash << 5) + hash) ^ joined.charCodeAt(i); hash = hash >>> 0; } return hash.toString(16).padStart(8, \"0\"); } }\n```\n\n### src\\infrastructure\\benchmark\\NamingConventionAnalyzer.ts\n```ts\nconst CLASS_DECL_RE = /^\\s*(?:export\\s+)?(?:abstract\\s+)?class\\s+([A-Za-z_$][\\w$]*)\\b/; const INTERFACE_DECL_RE = /^\\s*(?:export\\s+)?interface\\s+([A-Za-z_$][\\w$]*)\\b/; const TYPE_ALIAS_RE = /^\\s*(?:export\\s+)?type\\s+([A-Za-z_$][\\w$]*)\\s*(?:<|=)/; const ENUM_DECL_RE = /^\\s*(?:export\\s+)?(?:const\\s+)?enum\\s+([A-Za-z_$][\\w$]*)\\b/; const FUNCTION_DECL_RE = /^\\s*(?:export\\s+)?(?:default\\s+)?(?:async\\s+)?function\\s+([A-Za-z_$][\\w$]*)\\b/; const METHOD_DECL_RE = /^\\s*(?:(?:public|private|protected|static|override|async|readonly)\\s+)*([A-Za-z_$][\\w$]*)\\s*(?:<[^>]*>)?\\s*\\([^)]*\\)\\s*(?::[^{]+)?\\{/; const CONST_DECL_RE = /^\\s*(?:export\\s+)?const\\s+([A-Za-z_$][\\w$]*)\\s*[=:]/; const LET_DECL_RE = /^\\s*(?:export\\s+)?let\\s+([A-Za-z_$][\\w$]*)\\s*[=:]/; const isPascalCase = (s: string): boolean => /^[A-Z][a-zA-Z0-9]*$/.test(s); const isCamelCase = (s: string): boolean => /^[a-z][a-zA-Z0-9]*$/.test(s); const isUpperSnakeCase = (s: string): boolean => /^[A-Z][A-Z0-9_]*$/.test(s); const isIPrefixPascal = (s: string): boolean => /^I[A-Z][a-zA-Z0-9]*$/.test(s); const isKebabOrPascalFile = (s: string): boolean => /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/.test(s) || /^[A-Z][a-zA-Z0-9]*$/.test(s); const SKIP_NAMES = new Set([ \"constructor\", \"ngOnInit\", \"ngOnDestroy\", \"ngOnChanges\", \"ngAfterViewInit\", \"ngAfterContentInit\", \"render\", \"componentDidMount\", \"componentDidUpdate\", \"componentWillUnmount\", \"getServerSideProps\", \"getStaticProps\", \"getStaticPaths\", \"main\", \"setUp\", \"tearDown\", ]); const isTooShort = (s: string): boolean => s.length <= 1; const isPrivateConvention = (s: string): boolean => s.startsWith(\"_\"); export class NamingConventionAnalyzer { analyze(files: CodeSegment[]): NamingConventionReport { const allViolations: NamingViolation[] = []; let totalChecked = 0; for (const file of files) { const ext = path.extname(file.filePath); if (ext === \".ts\" || ext === \".js\" || ext === \".tsx\" || ext === \".jsx\") { const baseName = path.basename(file.filePath, ext); totalChecked++; if (!isKebabOrPascalFile(baseName)) { allViolations.push({ filePath: file.filePath, line: 1, kind: \"file-not-kebab-or-pascal\", actual: baseName, expected: this.toKebabCase(baseName), }); } } const lines = file.originalContent.split(\"\\n\"); for (let i = 0; i < lines.length; i++) { const line = lines[i]; const lineNum = i + 1; const trimmed = line.trim(); if ( trimmed.startsWith(\" trimmed.startsWith(\"*\") || trimmed.startsWith(\"/*\") ) continue; const checks: Array<{ re: RegExp; kind: NamingViolationKind; predicate: (n: string) => boolean; suggest: (n: string) => string; }> = [ { re: CLASS_DECL_RE, kind: \"class-not-pascal-case\", predicate: isPascalCase, suggest: this.toPascalCase.bind(this), }, { re: INTERFACE_DECL_RE, kind: \"interface-missing-i-prefix\", predicate: isIPrefixPascal, suggest: (n) => \"I\" + this.toPascalCase(n.replace(/^I/, \"\")), }, { re: TYPE_ALIAS_RE, kind: \"type-not-pascal-case\", predicate: isPascalCase, suggest: this.toPascalCase.bind(this), }, { re: ENUM_DECL_RE, kind: \"enum-not-pascal-case\", predicate: isPascalCase, suggest: this.toPascalCase.bind(this), }, { re: FUNCTION_DECL_RE, kind: \"function-not-camel-case\", predicate: isCamelCase, suggest: this.toCamelCase.bind(this), }, ]; for (const check of checks) { const match = check.re.exec(line); if (!match) continue; const name = match[1]; if (!name || isTooShort(name) || isPrivateConvention(name) || SKIP_NAMES.has(name)) continue; totalChecked++; if (!check.predicate(name)) { allViolations.push({ filePath: file.filePath, line: lineNum, kind: check.kind, actual: name, expected: check.suggest(name), }); } } const constMatch = CONST_DECL_RE.exec(line); if (constMatch) { const name = constMatch[1]; if (name && !isTooShort(name) && !isPrivateConvention(name) && !SKIP_NAMES.has(name)) { totalChecked++; const looksLikeConstant = /^[A-Z_][A-Z0-9_]*$/.test(name) || name === name.toUpperCase(); if (looksLikeConstant && !isUpperSnakeCase(name)) { allViolations.push({ filePath: file.filePath, line: lineNum, kind: \"constant-not-upper-snake\", actual: name, expected: this.toUpperSnakeCase(name), }); } } } const letMatch = LET_DECL_RE.exec(line); if (letMatch) { const name = letMatch[1]; if (name && !isTooShort(name) && !isPrivateConvention(name) && !SKIP_NAMES.has(name)) { totalChecked++; if (!isCamelCase(name)) { allViolations.push({ filePath: file.filePath, line: lineNum, kind: \"variable-not-camel-case\", actual: name, expected: this.toCamelCase(name), }); } } } } } const totalViolations = allViolations.length; const score = totalChecked === 0 ? 100 : Math.round(((totalChecked - totalViolations) / totalChecked) * 100); return { score, totalChecked, totalViolations, violations: allViolations .sort((a, b) => a.filePath.localeCompare(b.filePath) || a.line - b.line) .slice(0, 20), }; } private toPascalCase(name: string): string { return name .replace(/[-_](.)/g, (_, c: string) => c.toUpperCase()) .replace(/^(.)/, (c: string) => c.toUpperCase()); } private toCamelCase(name: string): string { const pascal = this.toPascalCase(name); return pascal.charAt(0).toLowerCase() + pascal.slice(1); } private toUpperSnakeCase(name: string): string { return name .replace(/([a-z])([A-Z])/g, \"$1_$2\") .replace(/-/g, \"_\") .toUpperCase(); } private toKebabCase(name: string): string { return name .replace(/([a-z])([A-Z])/g, \"$1-$2\") .replace(/_/g, \"-\") .toLowerCase(); } }\n```\n\n### src\\infrastructure\\config\\ConfigurationAuditor.ts\n```ts\nexport class ConfigurationAuditor implements IProjectAuditor { readonly name = \"Infrastructure & Dependency Audit (IaC/SCA)\"; constructor(private readonly aiProvider: IAiProvider) {} async audit(context: AuditContext): Promise<AuditResult> { void context; void this.aiProvider; return { infraFindings: [], scannedFiles: [], isPublicFacing: undefined, }; } }\n```\n\n### src\\infrastructure\\config\\LocalSkillRepository.ts\n```ts\nconst SKILL_GLOB_PATTERNS = [ \".skills*.md\", \".agents*.md\", \".agent*.md\", \"_agents*.md\", \"_agent*.md\", \".gemini*.md\", ]; const DEFAULT_PREFIX = \"You are an elite code reviewer. Your goal is to evaluate the following code strictly against these organizational standards.\"; export class LocalSkillRepository implements ISkillRepository { async loadSkillsContext(baseDir: string): Promise<string> { const files = await fg(SKILL_GLOB_PATTERNS, { cwd: baseDir, absolute: true, ignore: [\"node_modules/**\", \"dist/**\", \"build/**\", \".git/**\"], }); let allSkills = \"\"; for (const file of files) { try { const content = await fs.readFile(file, \"utf-8\"); allSkills += `\\n\\n--- Skill Data from ${file} ---\\n${content}\\n`; } catch (e) { } } return allSkills.trim() ? `${DEFAULT_PREFIX}\\n${allSkills}` : `${DEFAULT_PREFIX}\\nNo internal skills provided. Rely on standard industry best practices for all languages present.`; } }\n```\n\n### src\\infrastructure\\config\\SkillSetRepository.ts\n```ts\nexport { LocalSkillRepository as SkillSetRepository } from \"./LocalSkillRepository.js\";\n```\n\n### src\\infrastructure\\filesystem\\FileSystemScanner.ts\n```ts\nexport function optimizeContent(content: string): string { let optimized = content.replace(/\\r\\n/g, \"\\n\"); optimized = optimized.replace( /(<svg\\b[^>]*>)(.*?)(<\\/svg>)/gs, (_match, p1, _p2, p3) => p1 + p3, ); optimized = optimized.replace(/\\/\\*[\\s\\S]*?\\*\\ optimized = optimized.replace(/(?<!https?:)\\/\\/.*$/gm, \"\"); optimized = optimized.replace( /^\\s*import\\s+[^;]*?from\\s+['\"].*?['\"]\\s*;/gm, \"\", ); optimized = optimized.replace(/^\\s*import\\s+['\"].*?['\"]\\s*;/gm, \"\"); optimized = optimized.replace(/^\\s*import\\s+(?:static\\s+)?[\\w.*]+\\s*;/gm, \"\"); optimized = optimized.replace(/\\s+/g, \" \").trim(); return optimized; } const CODE_GLOB_PATTERN = \"src*.{java,ts,js,tsx,jsx,html,css,scss}\"; const BASE_IGNORE_LIST = [ \"***.test.*\", \"**/__tests__ export class FileSystemScanner implements IFileScanner { async scan(baseDir: string): Promise<ScannedProject> { const ignoreList = [ ...BASE_IGNORE_LIST, ...(await this.readGitIgnore(baseDir)), ]; const filePaths = await fg([CODE_GLOB_PATTERN], { cwd: baseDir, ignore: ignoreList, absolute: true, }); const codeFiles: CodeSegment[] = []; for (const filePath of filePaths) { try { const rawContent = await fs.readFile(filePath, \"utf-8\"); const optimizedContent = optimizeContent(rawContent); const relativePath = path.relative(baseDir, filePath); codeFiles.push({ filePath: relativePath, originalContent: rawContent, content: optimizedContent, }); } catch (e) { console.warn(`FileSystemScanner: could not read ${filePath}:`, e); } } return { codeFiles, iacFiles: {}, dependencyManifests: {}, configFiles: {}, ciFiles: {}, sampleSources: [], sampleTests: [], packageJson: undefined, directoryTree: \"\", isPublicFacing: false, }; } private async readGitIgnore(baseDir: string): Promise<string[]> { try { const gitignoreContent = await fs.readFile( path.join(baseDir, \".gitignore\"), \"utf-8\", ); return gitignoreContent .split(\"\\n\") .map((line) => line.trim()) .filter((line) => line && !line.startsWith(\"#\")) .map((line) => { let pattern = line.startsWith(\"/\") ? line.substring(1) : \"**/\" + line; if (pattern.endsWith(\"/\")) pattern += \"**\"; return pattern; }); } catch { return []; } } }\n```\n\n### src\\infrastructure\\filesystem\\ProjectScanner.ts\n```ts\nexport type { CodeSegment as CodeFile } from \"../../core/entities/CodeSegment.js\"; export interface ProjectContext { baseDir: string; codeFiles: CodeFile[]; packageJson: string | null; directoryTree: string; configFiles: Record<string, string>; ciFiles: Record<string, string>; sampleTests: Array<{ relPath: string; content: string }>; sampleSources: Array<{ relPath: string; content: string }>; iacFiles: Record<string, string>; dependencyManifests: Record<string, string>; isPublicFacing: boolean; } const TREE_SKIP = new Set([ \"node_modules\", \".git\", \"dist\", \"build\", \".next\", \"__pycache__\", \"target\", \"vendor\", \".angular\", \".cache\", \"coverage\", \".turbo\", ]); const CODE_PATTERNS = \"src*.{java,ts,js,tsx,jsx,html,css,scss,py,rb,go,cs}\"; const CONFIG_CANDIDATES: Record<string, string[]> = { \"tsconfig.json\": [\"tsconfig.json\", \"tsconfig.*.json\"], \".eslintrc\": [ \".eslintrc\", \".eslintrc.js\", \".eslintrc.cjs\", \".eslintrc.json\", \".eslintrc.yml\", \"eslint.config.js\", \"eslint.config.mjs\", ], \"jest.config\": [ \"jest.config.js\", \"jest.config.ts\", \"jest.config.cjs\", \"jest.config.mjs\", ], \"vitest.config\": [\"vitest.config.ts\", \"vitest.config.js\"], \"pom.xml\": [\"pom.xml\"], \"build.gradle\": [\"build.gradle\", \"build.gradle.kts\"], \".prettierrc\": [ \".prettierrc\", \".prettierrc.js\", \".prettierrc.json\", \".prettierrc.yml\", ], }; const CI_PATTERNS = [ \".github/workflowsDockerfile\", \"**/Dockerfile.*\", \"docker-compose.yml\", \"docker-compose.yaml\", \"docker-compose.*.yml\", \"docker-compose.*.yaml\", \"**/docker-compose.yml\", \"**/docker-compose.yaml\", \"***.tfvars\", \"k8s*.yml\", \"k8s*.yaml\", \"kubernetes*.yml\", \"kubernetes*.yaml\", \"helm*.yml\", \"helm*.yaml\", \"infra*.yml\", \"infra*.yaml\", \"deploy*.yml\", \"deploy*.yaml\", \".github/workflows*.spec.ts\", \"***.test.ts\", \"***.spec.tsx\", \"***Test.java\", \"***.service.ts\", \"src*.controller.ts\", \"src*.component.ts\", \"src*.service.js\", \"src*.controller.js\", \"src*.ts\", \"src*.js\", \"src*.java\", \"lib*.ts\", \"app*.ts\", ]; const MAX_META_BYTES = 8192; const MAX_SAMPLE_BYTES = 6144; async function safeRead( filePath: string, cap = MAX_META_BYTES, ): Promise<string | null> { try { const content = await nodefs.readFile(filePath, \"utf-8\"); return content.length > cap ? content.slice(0, cap) + \"\\n…[truncated]\" : content; } catch { return null; } } async function readGitIgnorePatterns(baseDir: string): Promise<string[]> { try { const raw = await nodefs.readFile( path.join(baseDir, \".gitignore\"), \"utf-8\", ); return raw .split(\"\\n\") .map((l) => l.trim()) .filter((l) => l && !l.startsWith(\"#\")) .map((l) => { let p = l.startsWith(\"/\") ? l.substring(1) : \"**/\" + l; if (p.endsWith(\"/\")) p += \"**\"; return p; }); } catch { return []; } } async function buildDirectoryTree( baseDir: string, maxDepth = 3, ): Promise<string> { const lines: string[] = [`📁 ${path.basename(baseDir)}/`]; async function walk( dir: string, prefix: string, depth: number, ): Promise<void> { if (depth > maxDepth) return; let entries: string[] = []; try { entries = await nodefs.readdir(dir); } catch { return; } entries = entries.filter((e) => !TREE_SKIP.has(e)); for (let i = 0; i < entries.length; i++) { const isLast = i === entries.length - 1; const connector = isLast ? \"└── \" : \"├── \"; const entryPath = path.join(dir, entries[i]); let stat; try { stat = await nodefs.stat(entryPath); } catch { continue; } if (stat.isDirectory()) { lines.push(`${prefix}${connector}📁 ${entries[i]}/`); await walk(entryPath, prefix + (isLast ? \" \" : \"│ \"), depth + 1); } else { lines.push(`${prefix}${connector}📄 ${entries[i]}`); } } } await walk(baseDir, \"\", 1); return lines.join(\"\\n\"); } export interface ScanOptions { maxSampleTests?: number; maxSampleSources?: number; } export class ProjectScanner { private readonly baseDir: string; private readonly opts: Required<ScanOptions>; constructor(baseDir: string, opts: ScanOptions = {}) { this.baseDir = baseDir; this.opts = { maxSampleTests: opts.maxSampleTests ?? 3, maxSampleSources: opts.maxSampleSources ?? 5, }; } private glob( patterns: string | string[], extra: object = {}, ): Promise<string[]> { return fg(patterns, { cwd: this.baseDir, absolute: true, ignore: [\"node_modules private async scanCodeFiles(gitIgnores: string[]): Promise<CodeFile[]> { const ignoreList = [ \"***.test.*\", \"**/__tests__ private async sampleTestFiles(): Promise< Array<{ relPath: string; content: string }> > { const hits = await this.glob(TEST_SOURCE_PATTERNS, { deep: 5 }); const result: Array<{ relPath: string; content: string }> = []; for (const hit of hits.slice(0, this.opts.maxSampleTests)) { const content = await safeRead(hit, MAX_SAMPLE_BYTES); if (content) result.push({ relPath: path.relative(this.baseDir, hit), content }); } return result; } private async sampleSourceFiles( codeFiles: CodeFile[], ): Promise<Array<{ relPath: string; content: string }>> { const priority = [ \"service\", \"controller\", \"component\", \"handler\", \"resolver\", \"manager\", ]; const sorted = [...codeFiles].sort((a, b) => { const pa = priority.findIndex((p) => a.filePath.toLowerCase().includes(p), ); const pb = priority.findIndex((p) => b.filePath.toLowerCase().includes(p), ); const ra = pa === -1 ? 999 : pa; const rb = pb === -1 ? 999 : pb; return ra - rb; }); return sorted.slice(0, this.opts.maxSampleSources).map((f) => ({ relPath: f.filePath, content: f.originalContent.length > MAX_SAMPLE_BYTES ? f.originalContent.slice(0, MAX_SAMPLE_BYTES) + \"\\n…[truncated]\" : f.originalContent, })); } async scan(): Promise<ProjectContext> { const gitIgnores = await readGitIgnorePatterns(this.baseDir); const [ packageJson, directoryTree, configFiles, ciFiles, iacFiles, dependencyManifests, sampleTests, ] = await Promise.all([ this.scanPackageJson(), buildDirectoryTree(this.baseDir, 3), this.scanConfigFiles(), this.scanCiFiles(), this.scanIacFiles(), this.scanDependencyManifests(), this.sampleTestFiles(), ]); const codeFiles = await this.scanCodeFiles(gitIgnores); const sampleSources = await this.sampleSourceFiles(codeFiles); const allIacContent = Object.values(iacFiles).concat( Object.values(ciFiles), ); const isPublicFacing = detectPublicExposure(allIacContent); return { baseDir: this.baseDir, codeFiles, packageJson, directoryTree, configFiles, ciFiles, sampleTests, sampleSources, iacFiles, dependencyManifests, isPublicFacing, }; } }\n```\n\n### src\\infrastructure\\persistence\\FeedbackStore.ts\n```ts\nexport interface FeedbackEntry { id: string; markedAt: string; file: string; line: number; snippetPreview: string; category?: string; note?: string; } export interface FeedbackStoreData { version: number; entries: FeedbackEntry[]; } const CACHE_DIR = \".reviewer-cache\"; const FEEDBACK_FILE = \"feedback.json\"; const CURRENT_VERSION = 1; export function fingerprintFinding( file: string, line: number, snippetOrSuggestion: string, ): string { const raw = `${file}:${line}:${snippetOrSuggestion.slice(0, 30)}`; return crypto.createHash(\"sha256\").update(raw).digest(\"hex\").slice(0, 16); } export class FeedbackStore { private readonly storePath: string; private store: FeedbackStoreData = { version: CURRENT_VERSION, entries: [] }; constructor(baseDir: string) { this.storePath = path.join(baseDir, CACHE_DIR, FEEDBACK_FILE); } get hasFeedback(): boolean { return this.store.entries.length > 0; } buildSystemPromptSuffix(): string { if (!this.hasFeedback) return \"\"; const lines = [FEEDBACK_SYSTEM_PROMPT_SUFFIX_INTRO]; for (const entry of this.store.entries) { lines.push( `- File: \\`${entry.file}\\` Line: ${entry.line}` + (entry.category ? ` Category: ${entry.category}` : \"\") + `\\n Pattern: \"${entry.snippetPreview}\"` + (entry.note ? `\\n Reason: ${entry.note}` : \"\"), ); } lines.push(FEEDBACK_SYSTEM_PROMPT_SUFFIX_OUTRO); return lines.join(\"\\n\"); } isFalsePositive(file: string, line: number, snippet: string): boolean { const id = fingerprintFinding(file, line, snippet); return this.store.entries.some((e) => e.id === id); } async load(): Promise<void> { try { const raw = await nodefs.readFile(this.storePath, \"utf-8\"); const parsed = JSON.parse(raw) as FeedbackStoreData; if (parsed.version === CURRENT_VERSION && Array.isArray(parsed.entries)) { this.store = parsed; } } catch { this.store = { version: CURRENT_VERSION, entries: [] }; } } async save(): Promise<void> { try { await nodefs.mkdir(path.dirname(this.storePath), { recursive: true }); await nodefs.writeFile( this.storePath, JSON.stringify(this.store, null, 2), \"utf-8\", ); } catch { } } get entries(): FeedbackEntry[] { return this.store.entries; } async markFalsePositive( entry: Omit<FeedbackEntry, \"id\" | \"markedAt\">, ): Promise<FeedbackEntry> { await this.load(); const id = fingerprintFinding(entry.file, entry.line, entry.snippetPreview); const existing = this.store.entries.find((e) => e.id === id); if (existing) { if (entry.note) existing.note = entry.note; await this.save(); return existing; } const newEntry: FeedbackEntry = { id, markedAt: new Date().toISOString(), ...entry, }; this.store.entries.push(newEntry); await this.save(); return newEntry; } }\n```\n\n### src\\infrastructure\\security\\exposureDetector.ts\n```ts\nconst PUBLIC_KEYWORDS = [ \"0.0.0.0/0\", \"allow: all\", \"allow_all\", \"public: true\", \"ingress:\", \"expose:\", \"publicIp\", \"LoadBalancer\", \"annotations.*external\", \"acl: public-read\", ]; export function detectPublicExposure(ciContents: string[]): boolean { const combined = ciContents.join(\"\\n\").toLowerCase(); return PUBLIC_KEYWORDS.some((kw) => combined.includes(kw.toLowerCase())); }\n```\n\n### src\\infrastructure\\security\\InfraAuditorAdapter.ts\n```ts\nconst DEEP_REVIEW_WEIGHT_THRESHOLD = 40; function sleep(ms: number): Promise<void> { return new Promise((resolve) => setTimeout(resolve, ms)); } export class InfraAuditorAdapter implements IProjectAuditor { readonly name = \"Infrastructure & Dependency Audit (IaC/SCA + Smart File Scoring)\"; constructor(private readonly aiProvider: IAiProvider) {} async audit(context: AuditContext): Promise<AuditResult> { const { codeFiles, iacFiles, dependencyManifests, logDebug = () => {}, } = context; const fileTree = codeFiles.map((f) => ({ path: f.filePath, extension: f.filePath.includes(\".\") ? f.filePath.split(\".\").pop()! : \"\", bytes: Buffer.byteLength(f.originalContent, \"utf-8\"), lines: f.originalContent.split(\"\\n\").length, })); const packageJson = dependencyManifests[\"package.json\"] ?? \"{}\"; const infraAuditRequest: InfraAuditRequest = { packageJson, infraFiles: iacFiles, fileTree, }; logDebug( `[InfraAuditorAdapter] Call 1 · auditInfra: ${fileTree.length} files in manifest.`, ); const callOneStart = performance.now(); const auditResult = await this.aiProvider.auditInfra(infraAuditRequest); const selectedFiles = auditResult.files.filter( (f) => f.weight >= DEEP_REVIEW_WEIGHT_THRESHOLD && !f.ignore_in_deep_review, ); logDebug( `[InfraAuditorAdapter] Selected ${selectedFiles.length} / ${auditResult.files.length} files for deep review` + ` (weight ≥ ${DEEP_REVIEW_WEIGHT_THRESHOLD}, not ignored).`, ); if (selectedFiles.length === 0) { logDebug( `[InfraAuditorAdapter] No files above threshold — skipping deep review.`, ); return { codeFindings: [], infraFindings: this.extractInfraFindings(auditResult), secretFindings: [], scannedFiles: auditResult.files.map((f) => f.path), isPublicFacing: undefined, }; } const auditInfraDurationMs = performance.now() - callOneStart; if (auditInfraDurationMs < 3_000) { logDebug( `[InfraAuditorAdapter] Micro-stagger 300ms (Call 1 done in ${Math.round(auditInfraDurationMs)}ms)…`, ); await sleep(300); } const selectedPaths = new Set(selectedFiles.map((f) => f.path)); const fileContents: Record<string, string> = {}; for (const f of codeFiles) { if (selectedPaths.has(f.filePath)) { fileContents[f.filePath] = f.content; } } const importContents: Record<string, string> = this.resolveImports( selectedFiles, codeFiles, selectedPaths, ); const templateContents: Record<string, string> = this.resolveTemplates( selectedFiles, codeFiles, ); logDebug( `[InfraAuditorAdapter] Call 2 · deepReview: ${Object.keys(fileContents).length} primary,` + ` ${Object.keys(importContents).length} imports,` + ` ${Object.keys(templateContents).length} templates.`, ); const deepReviewRequest: DeepReviewRequest = { fileContents, importContents, templateContents, }; const deepResult = await this.aiProvider.deepReview(deepReviewRequest); const codeFindings: ReviewFinding[] = deepResult.reviewed_files.flatMap( (reviewedFile) => reviewedFile.issues.map((issue) => ({ file: reviewedFile.path, line: 1, snippet: issue.evidence, suggestion: issue.suggested_fix, category: issue.type, priority: this.mapSeverityToPriority(issue.severity), })), ); const repoLevelInfraFindings: InfraFindingEntity[] = deepResult.repo_level_findings.map((f) => ({ file: \"[repo-level]\", category: \"other\", title: f.title, description: f.detail, remediation: f.recommended_action, severity: f.rank <= 3 ? (\"high\" as const) : (\"medium\" as const), })); const infraFindings: InfraFindingEntity[] = [ ...this.extractInfraFindings(auditResult), ...repoLevelInfraFindings, ]; logDebug( `[InfraAuditorAdapter] Done: ${codeFindings.length} code findings,` + ` ${infraFindings.length} infra findings.`, ); return { codeFindings, infraFindings, secretFindings: [], scannedFiles: selectedFiles.map((f) => f.path), isPublicFacing: undefined, }; } private extractInfraFindings(auditResult: { summary: { ignored_patterns_detected: string[] }; }): InfraFindingEntity[] { return auditResult.summary.ignored_patterns_detected.map((pattern) => ({ file: pattern, category: \"other\" as const, title: `Ignored pattern detected: ${pattern}`, description: `The file pattern \"${pattern}\" was flagged by the infra audit as typically non-reviewable.`, remediation: \"Verify this file does not contain sensitive logic or secrets.\", severity: \"low\" as const, })); } private resolveImports( selectedFiles: ScoredFile[], allCodeFiles: AuditContext[\"codeFiles\"], selectedPaths: Set<string>, ): Record<string, string> { const result: Record<string, string> = {}; const importRegex = /(?:import|require)\\s*(?:[^'\"]*['\"])([.][^'\"]+)['\"]/g; const MAX_IMPORTS = 10; for (const sf of selectedFiles) { const sourceFile = allCodeFiles.find((f) => f.filePath === sf.path); if (!sourceFile) continue; let match: RegExpExecArray | null; const importRegexCopy = new RegExp(importRegex.source, importRegex.flags); while ( (match = importRegexCopy.exec(sourceFile.originalContent)) !== null ) { const importedPath = match[1]; const dir = sf.path.split(\"/\").slice(0, -1).join(\"/\"); const candidates = [ `${dir}/${importedPath}`, `${dir}/${importedPath}.ts`, `${dir}/${importedPath}.js`, `${dir}/${importedPath}/index.ts`, `${dir}/${importedPath}/index.js`, ].map((p) => p.replace(/\\/\\ for (const candidate of candidates) { const resolved = allCodeFiles.find( (f) => f.filePath === candidate || f.filePath === candidate.replace(/^\\.\\ ); if ( resolved && !selectedPaths.has(resolved.filePath) && !result[resolved.filePath] ) { result[resolved.filePath] = resolved.content; if (Object.keys(result).length >= MAX_IMPORTS) return result; break; } } } } return result; } private resolveTemplates( selectedFiles: ScoredFile[], allCodeFiles: AuditContext[\"codeFiles\"], ): Record<string, string> { const result: Record<string, string> = {}; for (const sf of selectedFiles) { const base = sf.path.replace(/\\.(ts|js|tsx|jsx)$/, \"\"); const templatePath = allCodeFiles.find( (f) => f.filePath === `${base}.html` || f.filePath === `${base}.component.html` || f.filePath === `${base}.template.html`, ); if (templatePath) result[templatePath.filePath] = templatePath.content; } return result; } private mapSeverityToPriority( severity: \"HIGH\" | \"MEDIUM\" | \"LOW\", ): ReviewFinding[\"priority\"] { if (severity === \"HIGH\") return \"high\"; if (severity === \"MEDIUM\") return \"medium\"; return \"low\"; } }\n```\n\n### src\\infrastructure\\security\\StaticSecurityAuditor.ts\n```ts\nconst ENTROPY_MIN_LEN = 20; const ENTROPY_MAX_LEN = 200; const ENTROPY_MIN_ASCII_RATIO = 0.70; const ENTROPY_THRESHOLD = 4.8; type SecretSeverity = \"critical\" | \"high\"; interface SecretRule { type: string; label: string; pattern: RegExp; severity: SecretSeverity; } const SECRET_RULES: SecretRule[] = [ { type: \"aws-access-key\", label: \"AWS Access Key\", pattern: /AKIA[0-9A-Z]{16}/g, severity: \"critical\", }, { type: \"generic-api-key\", label: \"Generic API Key\", pattern: /(?:api[_-]?key|apikey)\\s*[:=]\\s*[\"']?([A-Za-z0-9_\\-]{20,})/gi, severity: \"critical\", }, { type: \"pem-private-key\", label: \"Private Key PEM\", pattern: /-----BEGIN (RSA|EC|DSA|OPENSSH) PRIVATE KEY-----/g, severity: \"critical\", }, { type: \"bearer-token\", label: \"Bearer Token\", pattern: /bearer\\s+[A-Za-z0-9\\-._~+/]{20,}/gi, severity: \"critical\", }, { type: \"database-url\", label: \"DB Connection\", pattern: /(?:mongodb|postgres|mysql|redis):\\/\\/[^\\s\"']+:[^\\s\"']+@/gi, severity: \"critical\", }, { type: \"hardcoded-password\", label: \"Hardcoded Password\", pattern: /(?:password|passwd|pwd)\\s*[:=]\\s*(?:[\"']|)(?!process\\.env|process\\[|window\\.|document\\.|.*\\$)([^\\s\"']{8,})(?:[\"']|)/gi, severity: \"critical\", }, { type: \"github-token\", label: \"GitHub Token\", pattern: /ghp_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{82}/g, severity: \"critical\", }, ]; const EXCLUSION_PATTERNS: RegExp[] = [ /^https?:\\/\\ /^wss?:\\/\\ /^grpc:\\/\\ /^ftp:\\/\\ /^[.]{0,2}\\ /^[A-Za-z]:\\\\/, /^@[a-z0-9-]+\\/[a-z0-9-]+/i, /^[\\w.\\-]+\\/[\\w.\\-/]+$/, /^#[0-9A-Fa-f]{3,8}$/, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i, /^\\d+\\.\\d+\\.\\d+/, /^\\d{4}-\\d{2}-\\d{2}/, /^data:[a-z]+\\/[a-z+]+;base64,/i, /^gemini-/i, /^gemini_/i, /^gcp-/i, /^projects\\ /^cloudcode-/i, /^[Mm]\\s*[\\d.]+\\s*[,\\s]/, /^rgba?\\(/i, /^hsl\\(/i, /[a-zA-Z]{4,}\\s+[a-zA-Z]{4,}/, /[\\^$|()\\[\\]{}?*+\\\\]{3,}/, /\\$\\{/, /<%=/, /\\{\\{/, /^[\\w\\s]+(?:,\\s*[\\w\\s]+){3,}$/, ]; function isSafeString(value: string): boolean { return EXCLUSION_PATTERNS.some((rx) => rx.test(value)); } export class StaticSecurityAuditor implements IProjectAuditor { readonly name = \"Secrets pre-scan (SAST)\"; async audit(context: AuditContext): Promise<AuditResult> { const secretFindings: SecretFindingEntity[] = []; for (const file of context.codeFiles) { for (const rule of SECRET_RULES) { rule.pattern.lastIndex = 0; let match: RegExpExecArray | null; while ((match = rule.pattern.exec(file.originalContent)) !== null) { const lineNumber = this.findLineNumber(file.originalContent, match.index); secretFindings.push({ file: file.filePath, line: lineNumber, patternType: rule.type, label: rule.label, snippet: this.redact(match[0]), severity: rule.severity, }); } rule.pattern.lastIndex = 0; } const stringLiterals = this.extractStringLiterals(file.originalContent); for (const literal of stringLiterals) { if (this.isHighEntropySecret(literal.value)) { secretFindings.push({ file: file.filePath, line: literal.line, patternType: \"high-entropy-string\", label: \"High Entropy String\", snippet: this.redact(literal.value), severity: \"high\", }); } } } secretFindings.sort((a, b) => { const sev: Record<string, number> = { critical: 0, high: 1 }; const sd = (sev[a.severity] ?? 2) - (sev[b.severity] ?? 2); if (sd !== 0) return sd; return a.file.localeCompare(b.file) || a.line - b.line; }); return { secretFindings }; } private isHighEntropySecret(value: string): boolean { if (value.length < ENTROPY_MIN_LEN || value.length > ENTROPY_MAX_LEN) return false; const asciiChars = [...value].filter( (c) => c.charCodeAt(0) >= 0x20 && c.charCodeAt(0) <= 0x7e, ); if (asciiChars.length / value.length < ENTROPY_MIN_ASCII_RATIO) return false; if (/\\s/.test(value)) return false; const asciiOnly = asciiChars.join(\"\"); if (this.calculateEntropy(asciiOnly) < ENTROPY_THRESHOLD) return false; if (isSafeString(value)) return false; return true; } private findLineNumber(content: string, matchIndex: number): number { return (content.slice(0, matchIndex).match(/\\n/g) ?? []).length + 1; } private redact(value: string): string { if (value.length <= 10) return \"***\"; return value.slice(0, 10) + \"***[REDACTED]\"; } private extractStringLiterals( content: string, ): Array<{ value: string; line: number }> { const literals: Array<{ value: string; line: number }> = []; const lines = content.split(\"\\n\"); const regex = /([\"'`])((?:(?=(\\\\?))\\3.)*?)\\1/g; for (let i = 0; i < lines.length; i++) { let match: RegExpExecArray | null; regex.lastIndex = 0; while ((match = regex.exec(lines[i])) !== null) { literals.push({ value: match[2], line: i + 1 }); } } return literals; } private calculateEntropy(str: string): number { if (!str) return 0; const len = str.length; const freq: Record<string, number> = {}; for (let i = 0; i < len; i++) { const c = str[i]; freq[c] = (freq[c] ?? 0) + 1; } return Object.values(freq).reduce((sum, count) => { const p = count / len; return sum - p * Math.log2(p); }, 0); } }\n```\n\n### src\\presentation\\cli\\DependencyContainer.ts\n```ts\nfunction projectContextToScannedProject(ctx: ProjectContext): ScannedProject { return { codeFiles: ctx.codeFiles, iacFiles: ctx.iacFiles, dependencyManifests: ctx.dependencyManifests, configFiles: ctx.configFiles, ciFiles: ctx.ciFiles, sampleSources: ctx.sampleSources, sampleTests: ctx.sampleTests, packageJson: ctx.packageJson ?? undefined, directoryTree: ctx.directoryTree, isPublicFacing: ctx.isPublicFacing, }; } export interface ContainerConfig { accessToken: string; cloudProject: string; logDebug: (msg: string) => void; feedbackManager: IFeedbackManager; baseDir: string; } export class DependencyContainer { readonly runCodeReview: RunCodeReview; readonly bootstrapProject: BootstrapProject; readonly aiProvider: IAiProvider; readonly fileScanner: IFileScanner; readonly auditors: IProjectAuditor[]; readonly skillRepository: ISkillRepository; readonly reportBuilder: IReportBuilder; private constructor(config: ContainerConfig) { const { accessToken, cloudProject, logDebug, feedbackManager, baseDir } = config; const outputDir = path.join(baseDir, \"gemini-code-reviewer\"); this.aiProvider = new GeminiProvider(accessToken, cloudProject, logDebug, outputDir); this.fileScanner = { scan: async (dir: string): Promise<ScannedProject> => { const ctx = await new ProjectScanner(dir).scan(); return projectContextToScannedProject(ctx); }, } satisfies IFileScanner; this.skillRepository = new LocalSkillRepository(); this.auditors = [ new StaticSecurityAuditor(), new CodeBenchmarkAuditor(), new InfraAuditorAdapter(this.aiProvider), ]; this.reportBuilder = new ReportBuilder(); this.runCodeReview = new RunCodeReview( this.fileScanner, this.aiProvider, this.auditors, this.skillRepository, this.reportBuilder, feedbackManager, ); this.bootstrapProject = new BootstrapProject( this.fileScanner, this.aiProvider, this.skillRepository, ); } static create(config: ContainerConfig): DependencyContainer { return new DependencyContainer(config); } }\n```\n\n### src\\presentation\\cli\\main.ts\n```ts\n#!/usr/bin/env node dotenv.config(); const program = new Command(); program .name(\"gemini-code-reviewer\") .description( \"AI-powered code reviewer using Google Gemini — Clean Architecture\", ) .version(\"2.0.0\"); async function resolveCredentials( logDebug: (msg: string) => void, forceLogin: boolean, ): Promise<{ accessToken: string; cloudProject: string }> { const oauthClient = await authenticate(logDebug, forceLogin); const { token } = await oauthClient.getAccessToken(); if (!token) throw new Error(\"No access token returned after authentication.\"); const cloudProject = await resolveCloudProject(token, logDebug); return { accessToken: token, cloudProject }; } program .command(\"init\") .description( \"Auto-discover the project and generate a tailored .agents/skills/ directory\", ) .option(\"-d, --dir <directory>\", \"Project root directory\", process.cwd()) .option(\"--debug\", \"Enable debug logging\", false) .option(\"--login\", \"Force a fresh browser-based login\", false) .option( \"--overwrite\", \"Overwrite existing skill files without prompting\", false, ) .action(async (options) => { const logDebug = createLogger(options.debug); const spinner = ora(); console.log(\"\\n🔬 gemini-code-reviewer init — Project Auto-Discovery\"); console.log(`📂 Analysing: ${options.dir}\\n`); try { spinner.start(\"Authenticating…\"); const { accessToken, cloudProject } = await resolveCredentials( logDebug, options.login, ); spinner.succeed(\"Authenticated.\"); const feedbackStore = new FeedbackStore(options.dir); await feedbackStore.load(); const config: ContainerConfig = { accessToken, cloudProject, logDebug, feedbackManager: feedbackStore, baseDir: options.dir, }; const container = DependencyContainer.create(config); await container.bootstrapProject.execute({ baseDir: options.dir, forceOverwrite: options.overwrite, logDebug, onProgress: (msg) => { spinner.text = msg; }, }); spinner.stop(); } catch (e: any) { spinner.fail(`Init failed: ${e.message}`); process.exit(1); } }); program .option(\"-d, --dir <directory>\", \"Directory to scan\", process.cwd()) .option(\"--debug\", \"Enable debug logging\", false) .option(\"--login\", \"Force a fresh browser-based login\", false) .option( \"--skip-init\", \"Skip auto-discovery phase even when .skills/ is absent\", false, ) .action(async (options) => { const logDebug = createLogger(options.debug); const spinner = ora(); const targetDir: string = options.dir; try { spinner.start(\"Authenticating…\"); const { accessToken, cloudProject } = await resolveCredentials( logDebug, options.login, ); spinner.succeed(\"Authenticated.\"); const feedbackStore = new FeedbackStore(targetDir); await feedbackStore.load(); logDebug( `Loaded ${feedbackStore.entries.length} false-positive suppression(s).`, ); const config: ContainerConfig = { accessToken, cloudProject, logDebug, feedbackManager: feedbackStore, baseDir: targetDir, }; const container = DependencyContainer.create(config); if (!options.skipInit) { const skillsDir = path.join(targetDir, \".agents\", \"skills\"); let skillsPresent = false; try { const entries = await nodefs.readdir(skillsDir); skillsPresent = entries.some((e) => !e.startsWith(\".\")); } catch { skillsPresent = false; } if (!skillsPresent) { console.log( `\\n⚡ No .agents/skills/ directory found — launching Auto-Discovery first.\\n` + ` Run with --skip-init to bypass this step.\\n`, ); spinner.start(\"Running Auto-Discovery (skill generation)…\"); try { await container.bootstrapProject.execute({ baseDir: targetDir, forceOverwrite: false, logDebug, onProgress: (msg) => { spinner.text = msg; }, }); spinner.succeed(\"Auto-Discovery complete.\"); } catch (e: any) { spinner.warn( `Auto-Discovery encountered an error (${e.message}) — continuing with review.`, ); } } } console.log(`\\nStarting review in directory: ${targetDir}`); spinner.start(\"Scanning project…\"); const { report, outputDir } = await container.runCodeReview.execute({ baseDir: targetDir, logDebug, onProgress: (msg) => { spinner.text = msg; }, }); spinner.succeed(\"Review complete.\"); const { ReportBuilder } = await import(\"../report/ReportBuilder.js\"); const builder = new ReportBuilder(); builder.addAiFindings(report.codeFindings); builder.addSecretResults(report.secretFindings); builder.addInfrastructureResults({ findings: report.infraFindings, isPublicFacing: report.isPublicFacing, scannedFiles: report.infraScannedFiles, }); if (report.aiSubScores) builder.setAiScores(report.aiSubScores); if (report.executiveSummary) builder.setExecutiveSummary(report.executiveSummary); if (report.timingStats) builder.setTimingStats(report.timingStats); const finalScore = builder.calculateFinalScore(); const consoleOutput = builder.build(true); const markdownOutput = builder.build(false); console.log(\"\\n\" + consoleOutput); console.log(`\\n📊 Final Score: ${finalScore}/100\\n`); const mdPath = path.join(outputDir, \"code-review-report.md\"); await nodefs.writeFile(mdPath, markdownOutput, \"utf-8\"); console.log(`📝 Report written to: ${mdPath}`); } catch (e: any) { spinner.fail(`Review failed: ${e.message}`); if (options.debug) console.error(e); process.exit(1); } }); program.parse(process.argv);\n```\n\n### src\\presentation\\report\\ReportBuilder.ts\n```ts\nexport type CodeFinding = ReviewFinding; export type { ExecutiveSummary } from \"../../core/entities/ProjectReport.js\"; export type RawFinding = ReviewFinding; export interface CodeReviewResponse { score: number; namingConventionScore?: number; solidPrinciplesScore?: number; codeDuplicationPercentage: number; cyclomaticComplexity: number; maintainabilityIndex: number; findings: CodeFinding[]; secretFindings?: SecretFindingEntity[]; infraFindings?: InfraFindingEntity[]; executiveSummary?: ExecutiveSummary; isPublicFacing?: boolean; } interface InfraResultState { findings: InfraFindingEntity[]; isPublicFacing: boolean; scannedFiles: string[]; } interface AggregatedFinding { suggestion: string; category?: string; priority: \"low\" | \"medium\" | \"high\"; occurrences: Array<{ file: string; line: number; snippet: string }>; recommendedFix?: { before: string; after: string }; maxRiskMultiplier?: number; } const CODE_FINDING_WEIGHTS: Record<string, number> = { high: 10, medium: 3, low: 1, }; const SECRET_WEIGHTS: Record<string, number> = { critical: 20, high: 10, medium: 5, low: 2, }; const INFRA_WEIGHTS: Record<string, number> = { critical: 20, high: 10, medium: 5, low: 1, }; const PRIORITY_ORDER: Record<string, number> = { high: 3, medium: 2, low: 1 }; function buildAggKey(f: CodeFinding): string { const cat = (f.category ?? \"other\") .toLowerCase() .replace(/[^a-z0-9]/g, \"-\") .slice(0, 30); const norm = (f.suggestion ?? \"\") .toLowerCase() .replace(/[^\\w\\s]/g, \"\") .replace(/\\s+/g, \" \") .trim() .slice(0, 70); return `${cat}::${norm}`; } function aggregateFindings(findings: CodeFinding[]): AggregatedFinding[] { const groups = new Map<string, AggregatedFinding>(); for (const f of findings) { const key = buildAggKey(f); const existing = groups.get(key); if (existing) { const alreadyPresent = existing.occurrences.some( (o) => o.file === f.file && o.line === f.line, ); if (!alreadyPresent) { existing.occurrences.push({ file: f.file, line: f.line, snippet: f.snippet, }); } if ( (PRIORITY_ORDER[f.priority] ?? 0) > (PRIORITY_ORDER[existing.priority] ?? 0) ) { existing.priority = f.priority; existing.suggestion = f.suggestion; } if (!existing.recommendedFix && f.recommendedFix) { existing.recommendedFix = f.recommendedFix; } const m = f.riskMultiplier ?? 1; if (m > (existing.maxRiskMultiplier ?? 1)) { existing.maxRiskMultiplier = m; } } else { groups.set(key, { suggestion: f.suggestion, category: f.category, priority: f.priority, occurrences: [{ file: f.file, line: f.line, snippet: f.snippet }], recommendedFix: f.recommendedFix, maxRiskMultiplier: f.riskMultiplier, }); } } return Array.from(groups.values()).sort((a, b) => { const pa = PRIORITY_ORDER[a.priority] ?? 0; const pb = PRIORITY_ORDER[b.priority] ?? 0; if (pa !== pb) return pb - pa; return b.occurrences.length - a.occurrences.length; }); } function priorityEmoji(p: string): string { return p === \"high\" ? \"🟠\" : p === \"medium\" ? \"🟡\" : \"🔵\"; } function severityEmoji(s: string): string { return s === \"critical\" ? \"🔴\" : s === \"high\" ? \"🟠\" : s === \"medium\" ? \"🟡\" : \"🔵\"; } function priorityBadge(p: string, useChalk: boolean): string { const b = `[${p.toUpperCase()}]`; if (!useChalk) return b; return p === \"high\" ? chalk.red.bold(b) : p === \"medium\" ? chalk.yellow(b) : chalk.dim(b); } function severityBadge(s: string, useChalk: boolean): string { const b = `[${s.toUpperCase()}]`; if (!useChalk) return b; if (s === \"critical\") return chalk.bgRed.white(b); if (s === \"high\") return chalk.red.bold(b); if (s === \"medium\") return chalk.yellow(b); return chalk.dim(b); } function riskLevelLabel(score: number | undefined): string { if (score === undefined) return \"—\"; if (score >= 80) return \"🟢 Low Risk\"; if (score >= 60) return \"🟡 Moderate\"; if (score >= 40) return \"🟠 High Risk\"; return \"🔴 Critical\"; } function formatScore(score: number | undefined, useChalk: boolean): string { if (score === undefined) return \"N/A\"; const text = `${Math.round(score)}/100`; if (!useChalk) return text; return score < 50 ? chalk.red(text) : score < 70 ? chalk.yellow(text) : chalk.green(text); } function renderFixBlock( fix: { before?: string; after?: string }, useChalk: boolean, ): string { if (!fix || typeof fix.before !== \"string\" || typeof fix.after !== \"string\") { return \"\"; } const beforeLines = fix.before.split(\"\\n\").map((l) => `- ${l}`); const afterLines = fix.after.split(\"\\n\").map((l) => `+ ${l}`); const allLines = [...beforeLines, ...afterLines]; if (useChalk) { const coloured = allLines .map((l) => l.startsWith(\"- \") ? chalk.red(l) : l.startsWith(\"+ \") ? chalk.green(l) : l, ) .join(\"\\n\"); return `\\n**💊 Recommended Fix:**\\n\\`\\`\\`diff\\n${coloured}\\n\\`\\`\\`\\n`; } return `\\n**💊 Recommended Fix:**\\n\\`\\`\\`diff\\n${allLines.join(\"\\n\")}\\n\\`\\`\\`\\n`; } function renderExecutiveSummary( summary: ExecutiveSummary, useChalk: boolean, ): string { let out = \"## 📋 Executive Summary\\n\\n\"; if (summary.isPublicFacing) { const w = \"⚠️ This project is INTERNET-FACING — score penalties are amplified.\"; out += useChalk ? chalk.red.bold(w) + \"\\n\\n\" : `> **${w}**\\n\\n`; } out += `### 🔍 The What\\n${summary.what}\\n\\n`; out += `### 💥 The Impact\\n${summary.impact}\\n\\n`; out += `### 🚨 The Risk\\n${summary.risk}\\n\\n`; out += \"---\\n\\n\"; return out; } function renderScoreTable( overallScore: number, aiScores: AiSubScores | undefined, localBenchmarks: CodeBenchmarkResults | undefined, isPublicFacing: boolean, useChalk: boolean, ): string { let out = \"## 📊 Scores\\n\\n\"; out += \"| Metric | Score | Risk Level |\\n|:---|:---:|:---:|\\n\"; out += `| **Overall (Priority-Weighted)** | ${formatScore(overallScore, useChalk)} | ${riskLevelLabel(overallScore)} |\\n`; const namingScoreSummary = localBenchmarks?.naming.score ?? aiScores?.namingConventionScore; const duplicationSummary = localBenchmarks?.duplication.duplicationPercentage ?? aiScores?.codeDuplicationPercentage; const complexitySummary = localBenchmarks?.complexity.averageComplexity ?? aiScores?.cyclomaticComplexity; const maintainabilitySummary = aiScores?.maintainabilityIndex; const solidSummary = aiScores?.solidPrinciplesScore; if (namingScoreSummary !== undefined) { const src = localBenchmarks?.naming ? \"local\" : \"AI\"; out += `| Naming Conventions *(${src})* | ${formatScore(namingScoreSummary, useChalk)} | — |\\n`; } if (solidSummary !== undefined) { out += `| SOLID Principles *(AI)* | ${formatScore(solidSummary, useChalk)} | — |\\n`; } if (maintainabilitySummary !== undefined) { out += `| Maintainability Index | ${formatScore(maintainabilitySummary, useChalk)} | — |\\n`; } if (duplicationSummary !== undefined) { out += `| Code Duplication | ${duplicationSummary.toFixed(1)}% | — |\\n`; } if (complexitySummary !== undefined) { out += `| Avg Cyclomatic Complexity | ${complexitySummary.toFixed(1)} | — |\\n`; } out += \"\\n\"; if (isPublicFacing) { const note = \"🌐 Internet-facing architecture detected — score uses ×0.93 exposure penalty.\"; out += useChalk ? chalk.yellow(note) + \"\\n\\n\" : `> ${note}\\n\\n`; } return out; } function renderSecretFindings( findings: SecretFindingEntity[], useChalk: boolean, ): string { if (findings.length === 0) return \"\"; let out = \"## 🔐 Secrets & Credentials Detected\\n\\n\"; out += \"> **⚠️ Rotate these immediately.** Hardcoded credentials were detected locally \" + \"(before any LLM call). Migrate to AWS Secrets Manager, HashiCorp Vault, \" + \"or Google Secret Manager.\\n\\n\"; for (const [i, f] of findings.entries()) { out += `### S${i + 1}. ${severityEmoji(f.severity)} ${severityBadge(f.severity, useChalk)} \\`${f.file}\\` (Line: ${f.line})\\n`; out += `**Type:** ${f.label} \\n`; out += `**Pattern:** \\`${f.snippet}\\`\\n\\n---\\n\\n`; } return out; } function renderInfraFindings( findings: InfraFindingEntity[], scannedFiles: string[], useChalk: boolean, ): string { if (findings.length === 0 && scannedFiles.length === 0) return \"\"; let out = \"## 🏗️ Infrastructure & Dependency Audit\\n\\n\"; if (scannedFiles.length > 0) { out += `**Scanned:** ${scannedFiles.map((f) => `\\`${f}\\``).join(\", \")}\\n\\n`; } if (findings.length === 0) { return out + \"*No infrastructure misconfigurations found.* ✅\\n\\n\"; } const high = findings.filter( (f) => f.severity === \"critical\" || f.severity === \"high\", ); const medium = findings.filter((f) => f.severity === \"medium\"); const low = findings.filter((f) => f.severity === \"low\"); let idx = 1; const renderInfra = ( f: InfraFindingEntity, i: number, collapse: boolean, ): string => { const emoji = severityEmoji(f.severity); const badge = severityBadge(f.severity, useChalk); const lineRef = f.line ? ` (Line: ${f.line})` : \"\"; const heading = `I${i}. ${emoji} ${badge} \\`${f.file}\\`${lineRef} — ${f.title}`; const body = `**Category:** ${f.category}\\n\\n${f.description}\\n\\n**Remediation:** ${f.remediation}\\n\\n---\\n\\n`; return collapse ? `<details>\\n<summary>${heading}</summary>\\n\\n${body}</details>\\n\\n` : `### ${heading}\\n\\n${body}`; }; for (const f of high) { out += renderInfra(f, idx++, false); } for (const f of medium) { out += renderInfra(f, idx++, true); } for (const f of low) { out += renderInfra(f, idx++, true); } return out; } function renderCodeFindings( aggregated: AggregatedFinding[], useChalk: boolean, ): string { if (aggregated.length === 0) { return \"*No code findings! Excellent code structure.* ✅\\n\\n\"; } let out = \"## 🕵️ Code Review Findings\\n\\n\"; const highCount = aggregated.filter((f) => f.priority === \"high\").length; const mediumCount = aggregated.filter((f) => f.priority === \"medium\").length; const lowCount = aggregated.filter((f) => f.priority === \"low\").length; const totalOccs = aggregated.reduce((s, f) => s + f.occurrences.length, 0); const merged = totalOccs - aggregated.length; out += `> **${aggregated.length} unique issue(s)** `; out += `— 🟠 ${highCount} high &nbsp; 🟡 ${mediumCount} medium &nbsp; 🔵 ${lowCount} low`; if (merged > 0) out += ` &nbsp; _(${merged} duplicate occurrence(s) merged)_`; out += \"\\n\\n\"; const highFindings = aggregated.filter((f) => f.priority === \"high\"); const mediumFindings = aggregated.filter((f) => f.priority === \"medium\"); const lowFindings = aggregated.filter((f) => f.priority === \"low\"); let idx = 1; for (const agg of highFindings) { const emoji = priorityEmoji(\"high\"); const badge = priorityBadge(\"high\", useChalk); const catTag = agg.category ? ` **[${agg.category}]**` : \"\"; const mux = agg.maxRiskMultiplier ?? 1; const riskTag = mux >= 1.8 ? \" ⚡ _internet-facing_\" : mux >= 1.5 ? \" ⚡ _high-exposure_\" : \"\"; if (agg.occurrences.length === 1) { const o = agg.occurrences[0]; out += `### ${idx}. ${emoji} ${badge}${catTag} \\`${o.file}\\` (Line: ${o.line})${riskTag}\\n\\n`; out += `**Code Snippet:**\\n\\`\\`\\`\\n${o.snippet}\\n\\`\\`\\`\\n`; } else { out += `### ${idx}. ${emoji} ${badge}${catTag} — ${agg.occurrences.length} locations${riskTag}\\n\\n`; out += \"**Affected locations:**\\n\\n\"; out += \"| File | Line | Snippet |\\n|:---|:---:|:---|\\n\"; for (const o of agg.occurrences) { out += `| \\`${o.file}\\` | ${o.line} | \\`${o.snippet.slice(0, 60)}\\` |\\n`; } out += \"\\n\"; } out += `**Issue:**\\n${agg.suggestion}\\n`; if (agg.recommendedFix) { out += renderFixBlock(agg.recommendedFix, useChalk); } out += \"\\n---\\n\\n\"; idx++; } for (const agg of mediumFindings) { const catTag = agg.category ? ` [${agg.category}]` : \"\"; const primary = agg.occurrences[0]; const extra = agg.occurrences.length > 1 ? ` (+${agg.occurrences.length - 1} more)` : \"\"; const summary = `${idx}. 🟡 [MEDIUM]${catTag} — \\`${primary.file}:${primary.line}\\`${extra}`; out += `<details>\\n<summary>${summary}</summary>\\n\\n`; if (agg.occurrences.length === 1) { out += `**Code Snippet:**\\n\\`\\`\\`\\n${primary.snippet}\\n\\`\\`\\`\\n\\n`; } else { out += \"**Affected locations:**\\n\\n| File | Line |\\n|:---|:---:|\\n\"; for (const o of agg.occurrences) out += `| \\`${o.file}\\` | ${o.line} |\\n`; out += `\\n**Primary Snippet:**\\n\\`\\`\\`\\n${primary.snippet}\\n\\`\\`\\`\\n\\n`; } out += `**Issue:**\\n${agg.suggestion}\\n`; if (agg.recommendedFix) out += renderFixBlock(agg.recommendedFix, useChalk); out += \"\\n</details>\\n\\n\"; idx++; } if (lowFindings.length > 0) { out += `<details>\\n<summary>🔵 ${lowFindings.length} LOW-priority finding${lowFindings.length > 1 ? \"s\" : \"\"} (click to expand)</summary>\\n\\n`; for (const agg of lowFindings) { const catTag = agg.category ? ` [${agg.category}]` : \"\"; const primary = agg.occurrences[0]; const extra = agg.occurrences.length > 1 ? ` (+${agg.occurrences.length - 1} more)` : \"\"; out += `#### ${idx}.${catTag} \\`${primary.file}:${primary.line}\\`${extra}\\n\\n`; if (agg.occurrences.length > 1) { out += \"Affected: \" + agg.occurrences.map((o) => `\\`${o.file}:${o.line}\\``).join(\", \") + \"\\n\\n\"; } else { out += `**Snippet:** \\`${primary.snippet.slice(0, 80)}\\`\\n\\n`; } out += `${agg.suggestion}\\n\\n---\\n\\n`; idx++; } out += \"</details>\\n\\n\"; } return out; } function renderLocalBenchmarkDetails( benchmarks: CodeBenchmarkResults | undefined, ): string { if (!benchmarks) return \"\"; let out = \"## 📈 Project Metrics (Local Analysis)\\n\\n\"; out += `### 🧩 Complexity\\n`; out += `- **Average Cyclomatic Complexity:** ${benchmarks.complexity.averageComplexity.toFixed(2)}\\n`; out += `- **Maximum Complexity Found:** ${benchmarks.complexity.maxComplexity}\\n`; out += `- **Total Functions Analysed:** ${benchmarks.complexity.totalFunctions}\\n`; out += `- **Complexity Hotspots:** ${benchmarks.complexity.hotspots.length}\\n\\n`; out += `### 👯 Duplication\\n`; out += `- **Duplication Percentage:** ${benchmarks.duplication.duplicationPercentage.toFixed(1)}%\\n`; out += `- **Duplicated Lines:** ${benchmarks.duplication.duplicatedLines} / ${benchmarks.duplication.totalLines}\\n`; out += `- **Top Duplicate Blocks:** ${benchmarks.duplication.topBlocks.length}\\n\\n`; out += `### 🏷️ Naming Conventions\\n`; out += `- **Score:** ${benchmarks.naming.score}/100\\n`; out += `- **Identifiers Checked:** ${benchmarks.naming.totalChecked}\\n`; out += `- **Violations Found:** ${benchmarks.naming.totalViolations}\\n\\n`; out += \"---\\n\\n\"; return out; } function renderTimingStats(stats: TimingStats): string { const fmt = (ms: number) => `${(ms / 1000).toFixed(1)}s`; let out = \"## ⏱️ Pipeline Timing\\n\\n\"; out += \"| Phase | Duration |\\n|:---|---:|\\n\"; out += `| 🔍 File scan + hashing | ${fmt(stats.scanMs)} |\\n`; if (stats.auditInfraMs !== undefined && stats.deepReviewMs !== undefined) { out += `| 🤖 auditInfra (Call 1) | ${fmt(stats.auditInfraMs)} |\\n`; out += `| 🤖 deepReview (Call 2) | ${fmt(stats.deepReviewMs)} |\\n`; } else { out += `| 🤖 AI audit + deep review | ${fmt(stats.auditMs)} |\\n`; } out += `| 📝 Executive summary | ${fmt(stats.summaryMs)} |\\n`; out += `| **⏳ Total** | **${fmt(stats.totalMs)}** |\\n`; out += \"\\n\"; out += `_Reviewed on ${stats.timestamp}_\\n\\n`; return out; } export class ReportBuilder implements IReportBuilder { private rawFindings: CodeFinding[] = []; private aggregated: AggregatedFinding[] = []; private infraResult: InfraResultState = { findings: [], isPublicFacing: false, scannedFiles: [], }; private secrets: SecretFindingEntity[] = []; private executiveSummary?: ExecutiveSummary; private aiScores?: AiSubScores; private localBenchmarks?: CodeBenchmarkResults; private timingStats?: TimingStats; addAiFindings(findings: RawFinding[]): void { this.rawFindings.push(...findings); this.aggregated = aggregateFindings(this.rawFindings); } addInfrastructureResults(results: InfrastructureResults): void { this.infraResult = results; } addSecretResults(secrets: SecretFindingEntity[]): void { this.secrets = secrets; } setExecutiveSummary(summary: ExecutiveSummary): void { this.executiveSummary = summary; } setAiScores(scores: AiSubScores): void { this.aiScores = scores; } setLocalBenchmarks(benchmarks: CodeBenchmarkResults): void { this.localBenchmarks = benchmarks; } setTimingStats(stats: TimingStats): void { this.timingStats = stats; } calculateFinalScore(): number { let penalty = 0; for (const agg of this.aggregated) { penalty += CODE_FINDING_WEIGHTS[agg.priority] ?? 1; } for (const s of this.secrets) { penalty += SECRET_WEIGHTS[s.severity] ?? 5; } for (const f of this.infraResult.findings) { penalty += INFRA_WEIGHTS[f.severity] ?? 5; } let score = 100 - penalty; if (this.infraResult.isPublicFacing) { score = Math.round(score * 0.93); } return Math.max(0, Math.min(100, Math.round(score))); } build(useChalk = false): string { const score = this.calculateFinalScore(); let report = \"# 🤖 AI Code Review Report\\n\\n\"; if (this.executiveSummary) { report += renderExecutiveSummary(this.executiveSummary, useChalk); } report += renderScoreTable( score, this.aiScores, this.localBenchmarks, this.infraResult.isPublicFacing, useChalk, ); if (this.secrets.length > 0) { report += renderSecretFindings(this.secrets, useChalk); } report += renderInfraFindings( this.infraResult.findings, this.infraResult.scannedFiles, useChalk, ); report += renderCodeFindings(this.aggregated, useChalk); if (this.localBenchmarks) { report += renderLocalBenchmarkDetails(this.localBenchmarks); } if (this.timingStats) { report += renderTimingStats(this.timingStats); } return report; } static fromCachedResponse(data: CodeReviewResponse): ReportBuilder { const builder = new ReportBuilder(); builder.addAiFindings(data.findings ?? []); builder.addSecretResults(data.secretFindings ?? []); builder.addInfrastructureResults({ findings: data.infraFindings ?? [], isPublicFacing: data.isPublicFacing ?? false, scannedFiles: [], }); if (data.executiveSummary) { builder.setExecutiveSummary(data.executiveSummary); } builder.setAiScores({ namingConventionScore: data.namingConventionScore, solidPrinciplesScore: data.solidPrinciplesScore, codeDuplicationPercentage: data.codeDuplicationPercentage ?? 0, cyclomaticComplexity: data.cyclomaticComplexity ?? 0, maintainabilityIndex: data.maintainabilityIndex ?? 0, }); return builder; } } export function generateMarkdownReport( data: CodeReviewResponse, useChalk = false, ): string { return ReportBuilder.fromCachedResponse(data).build(useChalk); }\n```\n\n### src\\shared\\utils\\Logger.ts\n```ts\nexport type LogDebugFn = (message: string) => void; export function createLogger(enabled: boolean, prefix = \"DEBUG\"): LogDebugFn { if (!enabled) { return () => {}; } return (message: string) => { console.log(`\\n[${prefix}] ${message}`); }; } export const noopLogger: LogDebugFn = () => {};\n```"
+            }
+          ]
+        }
+      ],
+      "generationConfig": {
+        "temperature": 0.1,
+        "responseMimeType": "application/json",
+        "responseSchema": {
+          "type": "OBJECT",
+          "properties": {
+            "reviewed_files": {
+              "type": "ARRAY",
+              "items": {
+                "type": "OBJECT",
+                "properties": {
+                  "path": {
+                    "type": "STRING"
+                  },
+                  "overall_assessment": {
+                    "type": "STRING"
+                  },
+                  "complexity_score": {
+                    "type": "NUMBER"
+                  },
+                  "issues": {
+                    "type": "ARRAY",
+                    "items": {
+                      "type": "OBJECT",
+                      "properties": {
+                        "severity": {
+                          "type": "STRING",
+                          "enum": [
+                            "HIGH",
+                            "MEDIUM",
+                            "LOW"
+                          ]
+                        },
+                        "type": {
+                          "type": "STRING",
+                          "enum": [
+                            "SECURITY",
+                            "RELIABILITY",
+                            "MAINTAINABILITY",
+                            "PERFORMANCE",
+                            "CONFIG"
+                          ]
+                        },
+                        "description": {
+                          "type": "STRING"
+                        },
+                        "evidence": {
+                          "type": "STRING"
+                        },
+                        "suggested_fix": {
+                          "type": "STRING"
+                        }
+                      },
+                      "required": [
+                        "severity",
+                        "type",
+                        "description",
+                        "evidence",
+                        "suggested_fix"
+                      ]
+                    }
+                  }
+                },
+                "required": [
+                  "path",
+                  "overall_assessment",
+                  "complexity_score",
+                  "issues"
+                ]
+              }
+            },
+            "repo_level_findings": {
+              "type": "ARRAY",
+              "items": {
+                "type": "OBJECT",
+                "properties": {
+                  "rank": {
+                    "type": "NUMBER"
+                  },
+                  "title": {
+                    "type": "STRING"
+                  },
+                  "detail": {
+                    "type": "STRING"
+                  },
+                  "recommended_action": {
+                    "type": "STRING"
+                  }
+                },
+                "required": [
+                  "rank",
+                  "title",
+                  "detail",
+                  "recommended_action"
+                ]
+              }
+            }
+          },
+          "required": [
+            "reviewed_files",
+            "repo_level_findings"
+          ]
+        }
+      }
+    }
+  },
+  "response": {
+    "reviewed_files": [
+      {
+        "path": "src/infrastructure/benchmark/NamingConventionAnalyzer.ts",
+        "overall_assessment": "This class analyzes code for naming convention violations using a set of regular expressions and predefined rules. It's highly complex due to numerous regex patterns and string manipulations.",
+        "complexity_score": 15,
+        "issues": [
+          {
+            "severity": "HIGH",
+            "type": "RELIABILITY",
+            "description": "A syntax error in the line processing loop will cause the application to crash.",
+            "evidence": "if ( trimmed.startsWith(\" trimmed.startsWith(\"*\") || trimmed.startsWith(\"/*\") )",
+            "suggested_fix": "Correct the syntax error to `if (trimmed.startsWith(\"//\") || trimmed.startsWith(\"*\") || trimmed.startsWith(\"/*\")) continue;`."
+          },
+          {
+            "severity": "MEDIUM",
+            "type": "RELIABILITY",
+            "description": "Regex-based parsing for naming conventions is brittle and prone to errors with complex or varied code syntax.",
+            "evidence": "Numerous `_RE` constants and their usage.",
+            "suggested_fix": "Use an AST parser (e.g., `typescript-eslint` parser) to accurately identify declarations."
+          },
+          {
+            "severity": "MEDIUM",
+            "type": "MAINTAINABILITY",
+            "description": "The `checks` array is a complex data structure that can be difficult to extend or modify without introducing errors.",
+            "evidence": "const checks: Array<{ re: RegExp; kind: NamingViolationKind; predicate: (n: string) => boolean; suggest: (n: string) => string; }>",
+            "suggested_fix": "If moving to an AST, define rules as visitors or simpler predicates on AST nodes."
+          },
+          {
+            "severity": "LOW",
+            "type": "MAINTAINABILITY",
+            "description": "Hardcoded `SKIP_NAMES` list can become unwieldy and difficult to maintain as more exceptions are added.",
+            "evidence": "const SKIP_NAMES = new Set([...])",
+            "suggested_fix": "Allow `SKIP_NAMES` to be configurable, perhaps loaded from a file or passed as an option."
+          }
+        ]
+      },
+      {
+        "path": "src/infrastructure/auth/GoogleAuth.ts",
+        "overall_assessment": "This file handles Google OAuth authentication, including extracting credentials, caching tokens, and performing the browser-based login flow. It also includes logic for resolving the Google Cloud project.",
+        "complexity_score": 12,
+        "issues": [
+          {
+            "severity": "HIGH",
+            "type": "SECURITY",
+            "description": "Hardcoding the extraction of OAuth client ID/secret by parsing a third-party library's source code is extremely brittle and potentially insecure.",
+            "evidence": "getCoreOAuthCredentials() function.",
+            "suggested_fix": "Obtain OAuth client ID/secret from Google Cloud Console and manage them securely (e.g., environment variables)."
+          },
+          {
+            "severity": "MEDIUM",
+            "type": "RELIABILITY",
+            "description": "Silent failure to load or clear cached credentials can lead to a poor user experience (repeated logins) or unexpected behavior.",
+            "evidence": "try { ... } catch { ... } blocks in `loadCachedCredentials` and `clearCachedCredentials`.",
+            "suggested_fix": "Log errors at a higher level (e.g., `console.error`) for credential persistence failures, or provide user-facing messages."
+          },
+          {
+            "severity": "LOW",
+            "type": "SECURITY",
+            "description": "The base URL used for parsing query parameters in `browserOAuthFlow` might not accurately reflect the actual server's listening address.",
+            "evidence": "new url.URL(req.url!, \"http://127.0.0.1:3000\").searchParams;",
+            "suggested_fix": "Ensure the base URL for `url.URL` accurately reflects the server's listening address and port."
+          },
+          {
+            "severity": "LOW",
+            "type": "RELIABILITY",
+            "description": "Generic HTTP error message lacks specific details from the API response, hindering debugging.",
+            "evidence": "if (!res.ok) throw new Error(`HTTP ${res.status}`);",
+            "suggested_fix": "Include the response body or a more detailed error message from the API in the thrown error."
+          }
+        ]
+      },
+      {
+        "path": "src/infrastructure/benchmark/DuplicationAnalyzer.ts",
+        "overall_assessment": "This class identifies duplicated code blocks by normalizing lines, creating fixed-size windows, hashing them, and detecting matches.",
+        "complexity_score": 8,
+        "issues": [
+          {
+            "severity": "MEDIUM",
+            "type": "RELIABILITY",
+            "description": "A commented-out, incomplete line in `normaliseLine` suggests a potential bug or unfinished logic.",
+            "evidence": "if (trimmed.startsWith(\" if (trimmed.startsWith(\"",
+            "suggested_fix": "Remove the incomplete line or complete its logic if it's intended to be part of the normalization."
+          },
+          {
+            "severity": "MEDIUM",
+            "type": "RELIABILITY",
+            "description": "Line normalization is too simplistic, potentially leading to inaccurate duplication detection by ignoring comments, strings, or formatting differences.",
+            "evidence": "`normaliseLine` implementation.",
+            "suggested_fix": "Enhance `normaliseLine` to strip comments and normalize string literals, or consider using an AST-based approach."
+          },
+          {
+            "severity": "LOW",
+            "type": "PERFORMANCE",
+            "description": "The hashing algorithm might not be optimal for very large codebases, potentially impacting performance.",
+            "evidence": "`hashWindow` implementation.",
+            "suggested_fix": "For performance-critical scenarios, consider using a more optimized hashing library or algorithm."
+          }
+        ]
+      },
+      {
+        "path": "src/infrastructure/security/StaticSecurityAuditor.ts",
+        "overall_assessment": "This auditor performs static analysis for secrets and high-entropy strings using regular expressions.",
+        "complexity_score": 10,
+        "issues": [
+          {
+            "severity": "MEDIUM",
+            "type": "SECURITY",
+            "description": "Regex-based secret detection is prone to false positives/negatives and can be bypassed by obfuscation or non-standard naming.",
+            "evidence": "`SECRET_RULES` array.",
+            "suggested_fix": "Supplement regex with more advanced SAST tools or techniques (e.g., taint analysis, semantic analysis)."
+          },
+          {
+            "severity": "MEDIUM",
+            "type": "SECURITY",
+            "description": "Extensive hardcoded `EXCLUSION_PATTERNS` are difficult to maintain and might be incomplete or overly broad, impacting detection accuracy.",
+            "evidence": "`EXCLUSION_PATTERNS` array.",
+            "suggested_fix": "Allow `EXCLUSION_PATTERNS` to be configurable and extensible by users."
+          },
+          {
+            "severity": "MEDIUM",
+            "type": "RELIABILITY",
+            "description": "Regex-based string literal extraction is brittle and may miss or misinterpret strings in complex code.",
+            "evidence": "`extractStringLiterals` implementation.",
+            "suggested_fix": "Use an AST parser to accurately extract string literals, which is more robust than regex."
+          },
+          {
+            "severity": "LOW",
+            "type": "SECURITY",
+            "description": "Redaction revealing the first 10 characters of a secret might still leak sensitive information.",
+            "evidence": "return value.slice(0, 10) + \"***[REDACTED]\";",
+            "suggested_fix": "Consider full redaction (e.g., `***[REDACTED]`) or configurable redaction levels."
+          }
+        ]
+      },
+      {
+        "path": "src/application/RunCodeReview.ts",
+        "overall_assessment": "This is the core orchestration logic for running a code review. It handles project scanning, caching, auditor execution, AI summary generation, and report building.",
+        "complexity_score": 25,
+        "issues": [
+          {
+            "severity": "MEDIUM",
+            "type": "RELIABILITY",
+            "description": "Using `unknown[]` in `CacheState` and then casting bypasses TypeScript's type checking, risking runtime errors if cached data is malformed.",
+            "evidence": "previousState.findings as ReviewFinding[]",
+            "suggested_fix": "Define specific types for cached findings in `CacheState` to ensure type safety. Implement robust schema validation."
+          },
+          {
+            "severity": "MEDIUM",
+            "type": "RELIABILITY",
+            "description": "Direct casting of cached data without validation can lead to unexpected behavior or crashes if the cache format changes.",
+            "evidence": "(state.findings as ReviewFinding[]) ?? []",
+            "suggested_fix": "Implement a cache versioning and migration strategy, or a validation layer when loading from cache."
+          },
+          {
+            "severity": "MEDIUM",
+            "type": "PERFORMANCE",
+            "description": "`resolveLineNumber` performs repeated string manipulations and searches, potentially impacting performance for projects with many findings.",
+            "evidence": "this.resolveLineNumber(fileMatch.originalContent, finding.snippet)",
+            "suggested_fix": "Optimize `resolveLineNumber` by pre-calculating line mappings or using a more efficient search algorithm."
+          },
+          {
+            "severity": "LOW",
+            "type": "MAINTAINABILITY",
+            "description": "Manual merging of `AuditResult` fields is verbose and not easily extensible.",
+            "evidence": "`mergeAuditResults` implementation.",
+            "suggested_fix": "Consider a more generic merge utility or a pattern that automatically handles new fields."
+          },
+          {
+            "severity": "LOW",
+            "type": "MAINTAINABILITY",
+            "description": "Hardcoded risk multiplier logic is not easily configurable or extensible for new file categories or more complex risk assessment.",
+            "evidence": "`getRiskMultiplier` function.",
+            "suggested_fix": "Externalize risk multiplier rules into a configuration file or a dedicated `RiskAssessmentService`."
+          }
+        ]
+      },
+      {
+        "path": "src/infrastructure/benchmark/ComplexityAnalyzer.ts",
+        "overall_assessment": "This class analyzes code segments to calculate cyclomatic complexity and identify hotspots. It uses regular expressions to detect function starts and decision points.",
+        "complexity_score": 15,
+        "issues": [
+          {
+            "severity": "MEDIUM",
+            "type": "RELIABILITY",
+            "description": "Regex-based parsing for complexity can be brittle and miss or misinterpret language constructs, leading to inaccurate metrics.",
+            "evidence": "`FUNCTION_START_RE`, `DECISION_POINT_RE`.",
+            "suggested_fix": "Consider using a proper AST parser (e.g., `typescript-eslint` parser for TS/JS) for accurate analysis."
+          },
+          {
+            "severity": "MEDIUM",
+            "type": "RELIABILITY",
+            "description": "`stripStringsAndComments` is prone to errors with complex string/comment patterns (e.g., multi-line comments, escaped quotes).",
+            "evidence": "`stripStringsAndComments` implementation.",
+            "suggested_fix": "Using an AST parser would be more reliable for preprocessing code before analysis."
+          },
+          {
+            "severity": "MEDIUM",
+            "type": "MAINTAINABILITY",
+            "description": "The state machine for `analyzeFile` (using `inFunction`, `braceDepth`, `functionBraceStart`) is intricate and hard to reason about.",
+            "evidence": "`analyzeFile` method.",
+            "suggested_fix": "Refactor the parsing logic, ideally leveraging an AST, to simplify function boundary detection and complexity counting."
+          }
+        ]
+      },
+      {
+        "path": "src/infrastructure/filesystem/FileSystemScanner.ts",
+        "overall_assessment": "This class scans a directory for code files, applies optimizations (stripping comments, imports, etc.), and reads `.gitignore` files.",
+        "complexity_score": 10,
+        "issues": [
+          {
+            "severity": "MEDIUM",
+            "type": "RELIABILITY",
+            "description": "Regex-based content optimization is brittle and can corrupt code or remove essential context for AI analysis.",
+            "evidence": "`optimizeContent` function.",
+            "suggested_fix": "Use a proper AST parser to safely remove comments and imports without corrupting code."
+          },
+          {
+            "severity": "LOW",
+            "type": "MAINTAINABILITY",
+            "description": "Hardcoded glob patterns and ignore lists are not easily configurable.",
+            "evidence": "const CODE_GLOB_PATTERN = ..., const BASE_IGNORE_LIST = [...]",
+            "suggested_fix": "Externalize these patterns into a configuration object or allow them to be passed as parameters."
+          },
+          {
+            "severity": "LOW",
+            "type": "RELIABILITY",
+            "description": "Silently logging file read errors might lead to an incomplete project scan without clear user notification.",
+            "evidence": "try { ... } catch (e) { console.warn(...); }",
+            "suggested_fix": "Aggregate file read errors and report them to the user at the end of the scan, or provide an option to fail."
+          }
+        ]
+      },
+      {
+        "path": "src/infrastructure/filesystem/ProjectScanner.ts",
+        "overall_assessment": "This is a more comprehensive project scanner that gathers various project artifacts like `package.json`, directory tree, config files, CI files, sample code, and IAC files. It also detects if the project is public-facing.",
+        "complexity_score": 18,
+        "issues": [
+          {
+            "severity": "MEDIUM",
+            "type": "MAINTAINABILITY",
+            "description": "Extensive hardcoded patterns and ignore lists make the scanner inflexible and difficult to adapt to diverse project types.",
+            "evidence": "`CODE_PATTERNS`, `CONFIG_CANDIDATES`, `CI_PATTERNS`, `TREE_SKIP` constants.",
+            "suggested_fix": "Externalize these patterns into a configurable file (e.g., YAML, JSON)."
+          },
+          {
+            "severity": "MEDIUM",
+            "type": "RELIABILITY",
+            "description": "Truncating file content might remove critical information needed for accurate AI analysis of configuration or manifest files.",
+            "evidence": "content.length > cap ? content.slice(0, cap) + \"\\n…[truncated]\" : content;",
+            "suggested_fix": "Re-evaluate the `MAX_META_BYTES` limit for different file types. For critical config files, load full content."
+          },
+          {
+            "severity": "LOW",
+            "type": "MAINTAINABILITY",
+            "description": "Commented-out `ignore` list in `glob` indicates potentially confusing or incomplete logic.",
+            "evidence": "ignore: [\"node_modules private async scanCodeFiles(gitIgnores: string[]): Promise<CodeFile[]> { const ignoreList = [ \"***.test.*\", \"**/__tests__`",
+            "suggested_fix": "Clarify the intended ignore logic for `glob` and `scanCodeFiles`, ensuring consistency and correctness."
+          },
+          {
+            "severity": "LOW",
+            "type": "RELIABILITY",
+            "description": "Heuristic-based sampling of source files might not always select the most representative business logic, potentially biasing AI analysis.",
+            "evidence": "const priority = [...] and sorting logic in `sampleSourceFiles`.",
+            "suggested_fix": "Consider more sophisticated sampling strategies (e.g., based on file size, commit history) or allow user-defined patterns."
+          }
+        ]
+      },
+      {
+        "path": "src/infrastructure/persistence/FeedbackStore.ts",
+        "overall_assessment": "This class manages user feedback, specifically for marking false positives. It stores feedback in a JSON file and generates a system prompt suffix for the AI.",
+        "complexity_score": 7,
+        "issues": [
+          {
+            "severity": "MEDIUM",
+            "type": "RELIABILITY",
+            "description": "Silent failure to load or save feedback can lead to lost user data or inconsistent false-positive suppression.",
+            "evidence": "try { ... } catch { ... } in `load` and `save`.",
+            "suggested_fix": "Log errors (e.g., `console.error`) for feedback persistence failures to inform the user and aid debugging."
+          },
+          {
+            "severity": "MEDIUM",
+            "type": "SECURITY",
+            "description": "Truncating snippets for fingerprinting can lead to hash collisions, allowing false positives to be incorrectly suppressed.",
+            "evidence": "snippetOrSuggestion.slice(0, 30) in `fingerprintFinding`.",
+            "suggested_fix": "Use the full snippet/suggestion for fingerprinting, or a more robust method to ensure uniqueness."
+          },
+          {
+            "severity": "LOW",
+            "type": "MAINTAINABILITY",
+            "description": "String concatenation for building the system prompt suffix can be hard to read and maintain.",
+            "evidence": "lines.push(...) and lines.join(\"\\n\").",
+            "suggested_fix": "Consider using template literals for better readability and maintainability of multi-line strings."
+          }
+        ]
+      },
+      {
+        "path": "src/infrastructure/security/InfraAuditorAdapter.ts",
+        "overall_assessment": "This adapter orchestrates the AI-driven infrastructure audit and deep review process. It selects high-impact files, resolves imports and templates, and maps AI findings to internal `ReviewFinding` types.",
+        "complexity_score": 15,
+        "issues": [
+          {
+            "severity": "MEDIUM",
+            "type": "RELIABILITY",
+            "description": "Heuristic import/template resolution is brittle and may miss critical dependencies, leading to incomplete deep reviews.",
+            "evidence": "`resolveImports`, `resolveTemplates` implementations, `MAX_IMPORTS`.",
+            "suggested_fix": "Use a proper module resolver (e.g., from a build tool or language server) to accurately identify imports."
+          },
+          {
+            "severity": "LOW",
+            "type": "MAINTAINABILITY",
+            "description": "Generic descriptions for `ignored_patterns_detected` findings might not provide enough actionable detail.",
+            "evidence": "`extractInfraFindings` implementation.",
+            "suggested_fix": "Enhance `InfraAuditResult` to include more specific details about why a pattern was ignored."
+          },
+          {
+            "severity": "LOW",
+            "type": "PERFORMANCE",
+            "description": "Hardcoded `sleep` for rate limiting is a crude mechanism and might not be optimal or necessary.",
+            "evidence": "await sleep(300);",
+            "suggested_fix": "Implement a more robust rate-limiting strategy (e.g., exponential backoff, token bucket) within the `IAiProvider`."
+          },
+          {
+            "severity": "LOW",
+            "type": "MAINTAINABILITY",
+            "description": "Simple hardcoded mapping of severity to priority is not easily extensible.",
+            "evidence": "`mapSeverityToPriority` function.",
+            "suggested_fix": "Consider a more declarative mapping (e.g., a `Map` or configuration object) if the mapping logic becomes more complex."
+          }
+        ]
+      },
+      {
+        "path": "src/presentation/cli/main.ts",
+        "overall_assessment": "This is the main CLI entry point, handling command parsing, authentication, and orchestrating the `init` and main review commands.",
+        "complexity_score": 20,
+        "issues": [
+          {
+            "severity": "MEDIUM",
+            "type": "RELIABILITY",
+            "description": "Critical failures during skill generation are only warned about, potentially leading to a suboptimal or incorrect code review.",
+            "evidence": "try { await container.bootstrapProject.execute(...) } catch (e: any) { spinner.warn(...) }",
+            "suggested_fix": "Provide an option to fail the review if skill generation is critical, or ensure the AI provider can gracefully handle missing skills."
+          },
+          {
+            "severity": "LOW",
+            "type": "RELIABILITY",
+            "description": "Suppressing all debug logs when `options.debug` is false might hide critical information during unexpected failures.",
+            "evidence": "const logDebug = createLogger(options.debug);",
+            "suggested_fix": "Implement different log levels (e.g., `debug`, `info`, `warn`, `error`) and allow configuration of the minimum log level."
+          },
+          {
+            "severity": "LOW",
+            "type": "MAINTAINABILITY",
+            "description": "Duplicated `resolveCredentials` logic across CLI commands.",
+            "evidence": "`resolveCredentials` called in two places.",
+            "suggested_fix": "Extract `resolveCredentials` to a shared utility function or a class method."
+          },
+          {
+            "severity": "LOW",
+            "type": "MAINTAINABILITY",
+            "description": "Dynamic import of `ReportBuilder` adds complexity without clear performance benefits if it's always used.",
+            "evidence": "const { ReportBuilder } = await import(\"../report/ReportBuilder.js\");",
+            "suggested_fix": "Use a static import for `ReportBuilder` unless there's a clear reason for dynamic loading."
+          }
+        ]
+      },
+      {
+        "path": "src/application/BootstrapProject.ts",
+        "overall_assessment": "This file orchestrates the initial setup of a project by analyzing existing skill files, scanning the project, and generating/improving skills using an AI provider. It handles file system operations, user interaction for overwriting, and constructs prompts for the AI.",
+        "complexity_score": 18,
+        "issues": [
+          {
+            "severity": "MEDIUM",
+            "type": "RELIABILITY",
+            "description": "File system write errors are caught and logged but might lead to an incomplete or corrupted state without clearer user feedback or retry mechanisms.",
+            "evidence": "try { await nodefs.mkdir(...); await nodefs.writeFile(...); } catch (e: any) { logDebug(...); skipped++; }",
+            "suggested_fix": "Elevate critical file write errors to the user, perhaps by re-throwing or providing a more prominent warning."
+          },
+          {
+            "severity": "LOW",
+            "type": "MAINTAINABILITY",
+            "description": "Direct `readline` usage for user input can block execution and is not ideal for automation or non-interactive environments.",
+            "evidence": "private async askYesNo(...)",
+            "suggested_fix": "Abstract user interaction into an `IUserInteraction` interface to allow different implementations."
+          },
+          {
+            "severity": "LOW",
+            "type": "MAINTAINABILITY",
+            "description": "Hardcoded constants make it less flexible and harder to configure without modifying the source.",
+            "evidence": "MAX_EXISTING_CONTENT_CHARS = 6_000",
+            "suggested_fix": "Move these constants to a configuration object or class properties that can be injected or set."
+          },
+          {
+            "severity": "LOW",
+            "type": "MAINTAINABILITY",
+            "description": "Complex console output with ASCII art is difficult to modify, localize, or adapt for different output formats.",
+            "evidence": "Large `console.log` block at the end of `execute`.",
+            "suggested_fix": "Extract the summary rendering logic into a dedicated formatter or template, possibly using a library for CLI styling."
+          }
+        ]
+      },
+      {
+        "path": "src/presentation/report/ReportBuilder.ts",
+        "overall_assessment": "This class is responsible for constructing the final code review report in markdown format, aggregating findings, calculating scores, and rendering various sections.",
+        "complexity_score": 30,
+        "issues": [
+          {
+            "severity": "MEDIUM",
+            "type": "MAINTAINABILITY",
+            "description": "Report generation logic is complex, using extensive string concatenation and conditional styling, making it hard to maintain.",
+            "evidence": "`build` method and numerous `render*` helper functions.",
+            "suggested_fix": "Consider using a templating engine (e.g., Handlebars, EJS) for report generation to separate presentation logic from data processing."
+          },
+          {
+            "severity": "LOW",
+            "type": "MAINTAINABILITY",
+            "description": "Hardcoded weights for findings and priorities make the scoring system inflexible.",
+            "evidence": "`CODE_FINDING_WEIGHTS`, `SECRET_WEIGHTS`, `INFRA_WEIGHTS`, `PRIORITY_ORDER` constants.",
+            "suggested_fix": "Externalize these weights into a configuration file that can be easily adjusted without code changes."
+          },
+          {
+            "severity": "LOW",
+            "type": "MAINTAINABILITY",
+            "description": "Heuristic-based aggregation key generation might lead to inconsistent grouping of findings.",
+            "evidence": "`buildAggKey` function.",
+            "suggested_fix": "Consider a more robust way to identify unique findings, perhaps by hashing a canonical representation of the suggestion and category."
+          },
+          {
+            "severity": "LOW",
+            "type": "MAINTAINABILITY",
+            "description": "Redundant type checks in `renderFixBlock` suggest potential type definition issues or overly defensive coding.",
+            "evidence": "if (!fix || typeof fix.before !== \"string\" || typeof fix.after !== \"string\")",
+            "suggested_fix": "Ensure `recommendedFix` is typed to guarantee `before` and `after` are strings, removing the need for these runtime checks."
+          },
+          {
+            "severity": "LOW",
+            "type": "MAINTAINABILITY",
+            "description": "Tight coupling between `CodeReviewResponse` and `ReportBuilder`'s internal state in `fromCachedResponse`.",
+            "evidence": "static fromCachedResponse(data: CodeReviewResponse): ReportBuilder { ... }",
+            "suggested_fix": "Consider a dedicated `ReportData` DTO that `CodeReviewResponse` can be mapped to, and `ReportBuilder` can consume."
+          }
+        ]
+      },
+      {
+        "path": "src/infrastructure/config/LocalSkillRepository.ts",
+        "overall_assessment": "This class loads skill definitions from markdown files based on glob patterns.",
+        "complexity_score": 5,
+        "issues": [
+          {
+            "severity": "MEDIUM",
+            "type": "RELIABILITY",
+            "description": "File read errors for skill files are silently ignored, potentially leading to incomplete or incorrect skill context.",
+            "evidence": "try { ... } catch (e) { }",
+            "suggested_fix": "Log the error (e.g., `console.warn`) to inform the user about unreadable skill files, or provide an option to fail loudly."
+          },
+          {
+            "severity": "LOW",
+            "type": "MAINTAINABILITY",
+            "description": "Hardcoded glob patterns for skill files are not easily configurable.",
+            "evidence": "const SKILL_GLOB_PATTERNS = [...]",
+            "suggested_fix": "Externalize glob patterns into a configuration object."
+          }
+        ]
+      },
+      {
+        "path": "src/infrastructure/benchmark/CodeBenchmarkAuditor.ts",
+        "overall_assessment": "This auditor integrates three local code analysis tools (Complexity, Duplication, Naming Convention) and converts their findings into `ReviewFinding` objects.",
+        "complexity_score": 8,
+        "issues": [
+          {
+            "severity": "LOW",
+            "type": "MAINTAINABILITY",
+            "description": "The `maintainabilityIndex` is calculated using a simple heuristic, which may not be a robust or standard measure.",
+            "evidence": "maintainabilityIndex: Math.max(0, Math.min(100, 100 - complexity.averageComplexity * 5))",
+            "suggested_fix": "Either remove this metric if it's not based on a standard, or implement a more recognized calculation."
+          },
+          {
+            "severity": "LOW",
+            "type": "MAINTAINABILITY",
+            "description": "Explicitly returning empty arrays for `secretFindings` and `infraFindings` is verbose when the auditor doesn't produce them.",
+            "evidence": "secretFindings: [], infraFindings: []",
+            "suggested_fix": "`AuditResult` fields are optional. Auditors should only return fields they populate."
+          }
+        ]
+      },
+      {
+        "path": "src/infrastructure/security/exposureDetector.ts",
+        "overall_assessment": "This utility function detects if a project is public-facing based on keywords in CI/CD or IaC content.",
+        "complexity_score": 2,
+        "issues": [
+          {
+            "severity": "LOW",
+            "type": "RELIABILITY",
+            "description": "Heuristic-based public exposure detection might be inaccurate or incomplete for diverse infrastructure configurations.",
+            "evidence": "const PUBLIC_KEYWORDS = [...]",
+            "suggested_fix": "Allow `PUBLIC_KEYWORDS` to be configurable or extensible. Consider integrating with more sophisticated IaC analysis tools."
+          }
+        ]
+      },
+      {
+        "path": "src/presentation/cli/DependencyContainer.ts",
+        "overall_assessment": "This class acts as a Dependency Injection container, responsible for instantiating and wiring up all the services and auditors.",
+        "complexity_score": 5,
+        "issues": [
+          {
+            "severity": "LOW",
+            "type": "MAINTAINABILITY",
+            "description": "The `fileScanner` is an anonymous object wrapping `ProjectScanner`, creating unnecessary indirection.",
+            "evidence": "this.fileScanner = { scan: async (dir: string): Promise<ScannedProject> => { const ctx = await new ProjectScanner(dir).scan(); return projectContextToScannedProject(ctx); }, } satisfies IFileScanner;",
+            "suggested_fix": "Make `ProjectScanner` directly implement `IFileScanner` and handle the `ProjectContext` to `ScannedProject` conversion internally."
+          },
+          {
+            "severity": "LOW",
+            "type": "MAINTAINABILITY",
+            "description": "`projectContextToScannedProject` is a boilerplate mapping function.",
+            "evidence": "function projectContextToScannedProject(ctx: ProjectContext): ScannedProject { ... }",
+            "suggested_fix": "Consider if `ProjectContext` and `ScannedProject` can be unified or if the mapping can be made more generic."
+          }
+        ]
+      },
+      {
+        "path": "src/shared/utils/Logger.ts",
+        "overall_assessment": "This utility provides a simple debug logger that can be enabled or disabled.",
+        "complexity_score": 1,
+        "issues": [
+          {
+            "severity": "LOW",
+            "type": "MAINTAINABILITY",
+            "description": "The logger only supports a single debug level, limiting flexibility for different logging needs.",
+            "evidence": "createLogger(enabled: boolean, prefix = \"DEBUG\")",
+            "suggested_fix": "Implement a more comprehensive logging utility with multiple log levels and configurable output destinations."
+          }
+        ]
+      },
+      {
+        "path": "src/infrastructure/config/ConfigurationAuditor.ts",
+        "overall_assessment": "This auditor is a placeholder. It currently does nothing and returns empty results.",
+        "complexity_score": 1,
+        "issues": [
+          {
+            "severity": "LOW",
+            "type": "MAINTAINABILITY",
+            "description": "The `ConfigurationAuditor` is a placeholder that performs no actual auditing, which can be misleading.",
+            "evidence": "void context; void this.aiProvider; return { infraFindings: [], scannedFiles: [], isPublicFacing: undefined, };",
+            "suggested_fix": "Either implement the intended configuration auditing logic or remove this auditor if it's not planned. Add a clear comment if it's a future feature."
+          }
+        ]
+      },
+      {
+        "path": "src/core/interfaces/IAiProvider.ts",
+        "overall_assessment": "This file defines the interface for the AI provider, outlining all the AI-related operations like project review, infrastructure review, summary generation, skill generation, infra auditing, and deep review. It's a well-defined interface.",
+        "complexity_score": 0,
+        "issues": [
+          {
+            "severity": "LOW",
+            "type": "MAINTAINABILITY",
+            "description": "Generic `Record<string, string>` for file contents lacks specific metadata that could aid AI processing or future extensions.",
+            "evidence": "`DeepReviewRequest` interface.",
+            "suggested_fix": "Consider a more structured type for file contents, perhaps `Record<string, { content: string; path: string; /* other metadata */ }>`, if the AI could benefit from more context."
+          }
+        ]
+      },
+      {
+        "path": "src/core/interfaces/IFileScanner.ts",
+        "overall_assessment": "Defines the interface for scanning a project, returning a `ScannedProject` object.",
+        "complexity_score": 0,
+        "issues": []
+      },
+      {
+        "path": "src/core/interfaces/IProjectAuditor.ts",
+        "overall_assessment": "Defines the interface for project auditors, which perform specific checks on the project context.",
+        "complexity_score": 0,
+        "issues": []
+      },
+      {
+        "path": "src/core/interfaces/IReportBuilder.ts",
+        "overall_assessment": "Defines the interface for building the final project report.",
+        "complexity_score": 0,
+        "issues": []
+      },
+      {
+        "path": "src/infrastructure/config/SkillSetRepository.ts",
+        "overall_assessment": "This file simply re-exports `LocalSkillRepository` as `SkillSetRepository`.",
+        "complexity_score": 0,
+        "issues": []
+      }
+    ],
+    "repo_level_findings": [
+      {
+        "rank": 1,
+        "title": "Over-reliance on Regex for Code Analysis",
+        "detail": "Multiple core components (`ComplexityAnalyzer`, `DuplicationAnalyzer`, `NamingConventionAnalyzer`, `FileSystemScanner`, `StaticSecurityAuditor`) heavily rely on regular expressions for parsing and analyzing code. This approach is inherently brittle, prone to false positives/negatives, and difficult to maintain or extend as language syntax evolves or new patterns emerge. This is evident in `ComplexityAnalyzer`'s function detection, `NamingConventionAnalyzer`'s declaration parsing, `FileSystemScanner`'s content optimization, and `StaticSecurityAuditor`'s secret detection.",
+        "recommended_action": "Investigate replacing regex-based code analysis with robust Abstract Syntax Tree (AST) parsers (e.g., `typescript-eslint` parser for TS/JS, or language-specific parsers). This would significantly improve accuracy, reliability, and maintainability of the analysis."
+      },
+      {
+        "rank": 2,
+        "title": "Inconsistent and Silent Error Handling",
+        "detail": "Many file system operations (reading/writing cache, skill files, gitignore) and external API calls (OAuth, AI provider) use `try...catch` blocks that silently swallow errors or only log them at a debug level. This can lead to an incomplete or incorrect state without user notification, making debugging difficult and impacting reliability. This is observed in `BootstrapProject` (file writes), `GoogleAuth` (credential load/save), `LocalSkillRepository` (skill file reads), `FileSystemScanner` (file reads), and `FeedbackStore` (feedback load/save).",
+        "recommended_action": "Implement a consistent error handling strategy. For critical errors, re-throw or provide user-facing messages. For non-critical errors, log at a `warn` or `error` level, not just `debug`, to ensure visibility."
+      },
+      {
+        "rank": 3,
+        "title": "Hardcoded Configuration and Heuristics",
+        "detail": "Numerous constants, patterns, and thresholds are hardcoded throughout the codebase, making the application rigid and difficult to configure or extend without modifying source code. This includes glob patterns, ignore lists, risk multipliers, AI prompt sections, and scoring weights. Examples include `ProjectScanner`'s various patterns and limits, `StaticSecurityAuditor`'s secret rules, and `ReportBuilder`'s scoring weights.",
+        "recommended_action": "Externalize configurable parameters into a dedicated configuration system (e.g., JSON, YAML, environment variables) that can be easily managed and updated by users or administrators."
+      },
+      {
+        "rank": 4,
+        "title": "Brittle Third-Party Integration",
+        "detail": "The method of extracting OAuth credentials by parsing the source code of a third-party library (`@google/gemini-cli-core`) is extremely brittle and insecure. Any update to the library could break this functionality, as seen in `src/infrastructure/auth/GoogleAuth.ts`'s `getCoreOAuthCredentials` function.",
+        "recommended_action": "Obtain OAuth client ID/secret through official channels (Google Cloud Console) and manage them securely (e.g., environment variables, secure configuration). Avoid parsing internal source code of third-party libraries."
+      },
+      {
+        "rank": 5,
+        "title": "Complex and Inflexible Report Generation",
+        "detail": "The `ReportBuilder` uses extensive string concatenation and conditional logic for rendering the final report. This makes the report structure difficult to modify, localize, or adapt to different output formats (e.g., HTML, PDF) without significant refactoring. This is evident in `src/presentation/report/ReportBuilder.ts`'s `build` method and its numerous `render*` helper functions.",
+        "recommended_action": "Adopt a templating engine (e.g., Handlebars, EJS, Pug) for report generation to separate presentation logic from data, making the report more maintainable and flexible."
+      },
+      {
+        "rank": 6,
+        "title": "Potential for Inaccurate AI Context",
+        "detail": "The project scanning and sampling logic (e.g., `sampleSourceFiles`, `resolveImports`, `resolveTemplates`) relies on heuristics and limits (e.g., `MAX_IMPORTS`, `MAX_META_BYTES`). This could lead to the AI receiving an incomplete or unrepresentative view of the codebase, potentially impacting the quality of its review. This is observed in `ProjectScanner.ts`'s sampling logic and `InfraAuditorAdapter.ts`'s import/template resolution.",
+        "recommended_action": "Improve sampling and context gathering mechanisms. Consider allowing users to explicitly define critical files/modules for AI context. Re-evaluate truncation limits and import resolution heuristics."
+      },
+      {
+        "rank": 7,
+        "title": "Unfinished/Malformed Code",
+        "detail": "There are instances of incomplete or syntactically incorrect code that could lead to runtime errors. Specifically, `DuplicationAnalyzer.ts` has a commented-out, malformed `if` statement, and `NamingConventionAnalyzer.ts` has a syntactically incorrect `if` statement that will cause a crash.",
+        "recommended_action": "Conduct a thorough code review and static analysis (linting) to identify and fix all such issues."
+      }
+    ]
+  }
+}

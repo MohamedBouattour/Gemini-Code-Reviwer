@@ -30,35 +30,13 @@
  */
 
 import * as path from "node:path";
+import { LanguageStrategyManager } from "../analysis/languages/LanguageStrategyManager.js";
 import type { CodeSegment } from "../../core/entities/CodeSegment.js";
 import type {
   NamingConventionReport,
   NamingViolation,
   NamingViolationKind,
 } from "../../core/entities/CodeBenchmarkResults.js";
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Regex rules
-// ─────────────────────────────────────────────────────────────────────────────
-
-// class Foo / abstract class Foo
-const CLASS_DECL_RE = /^\s*(?:export\s+)?(?:abstract\s+)?class\s+([A-Za-z_$][\w$]*)\b/;
-// interface IFoo / interface Foo
-const INTERFACE_DECL_RE = /^\s*(?:export\s+)?interface\s+([A-Za-z_$][\w$]*)\b/;
-// type Foo = ...
-const TYPE_ALIAS_RE = /^\s*(?:export\s+)?type\s+([A-Za-z_$][\w$]*)\s*(?:<|=)/;
-// enum Foo / const enum Foo
-const ENUM_DECL_RE = /^\s*(?:export\s+)?(?:const\s+)?enum\s+([A-Za-z_$][\w$]*)\b/;
-// function foo() / async function foo()
-const FUNCTION_DECL_RE =
-  /^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\b/;
-// public/private/protected method foo() inside a class
-const METHOD_DECL_RE =
-  /^\s*(?:(?:public|private|protected|static|override|async|readonly)\s+)*([A-Za-z_$][\w$]*)\s*(?:<[^>]*>)?\s*\([^)]*\)\s*(?::[^{]+)?\{/;
-// const FOO = ... (module-level constants: all caps → UPPER_SNAKE)
-const CONST_DECL_RE = /^\s*(?:export\s+)?const\s+([A-Za-z_$][\w$]*)\s*[=:]/;
-// let foo = ...
-const LET_DECL_RE = /^\s*(?:export\s+)?let\s+([A-Za-z_$][\w$]*)\s*[=:]/;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Convention predicates
@@ -122,110 +100,76 @@ export class NamingConventionAnalyzer {
         }
       }
 
-      const lines = file.originalContent.split("\n");
-      for (let i = 0; i < lines.length; i++) {
-        const line = lines[i];
-        const lineNum = i + 1;
-        // Skip comment lines
-        const trimmed = line.trim();
+      const strategy = LanguageStrategyManager.getStrategy(file.filePath);
+      const identifiers = strategy.extractIdentifiers(file.originalContent);
+
+      for (const id of identifiers) {
         if (
-          trimmed.startsWith("//") ||
-          trimmed.startsWith("*") ||
-          trimmed.startsWith("/*")
-        ) continue;
+          !id.name ||
+          isTooShort(id.name) ||
+          isPrivateConvention(id.name) ||
+          SKIP_NAMES.has(id.name)
+        )
+          continue;
 
-        // Each check: try match, validate, push violation if needed
-        const checks: Array<{
-          re: RegExp;
-          kind: NamingViolationKind;
-          predicate: (n: string) => boolean;
-          suggest: (n: string) => string;
-        }> = [
-          {
-            re: CLASS_DECL_RE,
-            kind: "class-not-pascal-case",
-            predicate: isPascalCase,
-            suggest: this.toPascalCase.bind(this),
-          },
-          {
-            re: INTERFACE_DECL_RE,
-            kind: "interface-missing-i-prefix",
-            predicate: isIPrefixPascal,
-            suggest: (n) => "I" + this.toPascalCase(n.replace(/^I/, "")),
-          },
-          {
-            re: TYPE_ALIAS_RE,
-            kind: "type-not-pascal-case",
-            predicate: isPascalCase,
-            suggest: this.toPascalCase.bind(this),
-          },
-          {
-            re: ENUM_DECL_RE,
-            kind: "enum-not-pascal-case",
-            predicate: isPascalCase,
-            suggest: this.toPascalCase.bind(this),
-          },
-          {
-            re: FUNCTION_DECL_RE,
-            kind: "function-not-camel-case",
-            predicate: isCamelCase,
-            suggest: this.toCamelCase.bind(this),
-          },
-        ];
+        totalChecked++;
 
-        for (const check of checks) {
-          const match = check.re.exec(line);
-          if (!match) continue;
-          const name = match[1];
-          if (!name || isTooShort(name) || isPrivateConvention(name) || SKIP_NAMES.has(name)) continue;
-          totalChecked++;
-          if (!check.predicate(name)) {
-            allViolations.push({
-              filePath: file.filePath,
-              line: lineNum,
-              kind: check.kind,
-              actual: name,
-              expected: check.suggest(name),
-            });
+        let violationKind: NamingViolationKind | undefined;
+        let expected: string | undefined;
+
+        switch (id.kind) {
+          case "class":
+            if (!isPascalCase(id.name)) {
+              violationKind = "class-not-pascal-case";
+              expected = this.toPascalCase(id.name);
+            }
+            break;
+          case "interface":
+            if (!isIPrefixPascal(id.name)) {
+              violationKind = "interface-missing-i-prefix";
+              expected = "I" + this.toPascalCase(id.name.replace(/^I/, ""));
+            }
+            break;
+          case "type":
+          case "enum":
+            if (!isPascalCase(id.name)) {
+              violationKind =
+                id.kind === "type"
+                  ? "type-not-pascal-case"
+                  : "enum-not-pascal-case";
+              expected = this.toPascalCase(id.name);
+            }
+            break;
+          case "function":
+          case "variable":
+            if (!isCamelCase(id.name)) {
+              violationKind =
+                id.kind === "function"
+                  ? "function-not-camel-case"
+                  : "variable-not-camel-case";
+              expected = this.toCamelCase(id.name);
+            }
+            break;
+          case "constant": {
+            const looksLikeConstant =
+              /^[A-Z_][A-Z0-9_]*$/.test(id.name) ||
+              id.name === id.name.toUpperCase();
+            if (looksLikeConstant && !isUpperSnakeCase(id.name)) {
+              violationKind = "constant-not-upper-snake";
+              expected = this.toUpperSnakeCase(id.name);
+            }
+            break;
           }
         }
 
-        // const: UPPER_SNAKE for ALL_CAPS names only (skip camelCase consts)
-        const constMatch = CONST_DECL_RE.exec(line);
-        if (constMatch) {
-          const name = constMatch[1];
-          if (name && !isTooShort(name) && !isPrivateConvention(name) && !SKIP_NAMES.has(name)) {
-            totalChecked++;
-            // Only flag if name looks like it tries to be UPPER_SNAKE but isn't
-            const looksLikeConstant = /^[A-Z_][A-Z0-9_]*$/.test(name) || name === name.toUpperCase();
-            if (looksLikeConstant && !isUpperSnakeCase(name)) {
-              allViolations.push({
-                filePath: file.filePath,
-                line: lineNum,
-                kind: "constant-not-upper-snake",
-                actual: name,
-                expected: this.toUpperSnakeCase(name),
-              });
-            }
-          }
-        }
-
-        // let: camelCase
-        const letMatch = LET_DECL_RE.exec(line);
-        if (letMatch) {
-          const name = letMatch[1];
-          if (name && !isTooShort(name) && !isPrivateConvention(name) && !SKIP_NAMES.has(name)) {
-            totalChecked++;
-            if (!isCamelCase(name)) {
-              allViolations.push({
-                filePath: file.filePath,
-                line: lineNum,
-                kind: "variable-not-camel-case",
-                actual: name,
-                expected: this.toCamelCase(name),
-              });
-            }
-          }
+        if (violationKind && expected) {
+          allViolations.push({
+            filePath: file.filePath,
+            line: id.line,
+            kind: violationKind,
+            actual: id.name,
+            expected: expected,
+          });
         }
       }
     }

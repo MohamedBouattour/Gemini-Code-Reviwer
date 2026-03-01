@@ -83,9 +83,7 @@ export class CodeBenchmarkAuditor implements IProjectAuditor {
         file: hotspot.filePath,
         line: hotspot.startLine,
         snippet: hotspot.functionName,
-        suggestion:
-          `Function \`${hotspot.functionName}\` has cyclomatic complexity ${hotspot.complexity}` +
-          ` (threshold: 10). Consider breaking it into smaller functions.`,
+        suggestion: `Cyclomatic complexity exceeds threshold (10). Consider breaking this function into smaller, more manageable units.`,
         category: "Complexity",
         priority: hotspot.complexity > 20 ? "high" : "medium",
       });
@@ -97,9 +95,7 @@ export class CodeBenchmarkAuditor implements IProjectAuditor {
         file: violation.filePath,
         line: violation.line,
         snippet: violation.actual,
-        suggestion:
-          `Naming violation (${violation.kind}): \`${violation.actual}\`` +
-          ` should be \`${violation.expected}\`.`,
+        suggestion: `Naming violation: identifier does not follow the ${violation.kind} convention for this project.`,
         category: "Naming",
         priority: "low",
       });
@@ -115,7 +111,10 @@ export class CodeBenchmarkAuditor implements IProjectAuditor {
         namingConventionScore: naming.score,
         codeDuplicationPercentage: duplication.duplicationPercentage,
         cyclomaticComplexity: complexity.averageComplexity,
-        maintainabilityIndex: complexity.averageComplexity,
+        maintainabilityIndex: Math.max(
+          0,
+          Math.min(100, 100 - complexity.averageComplexity * 5),
+        ),
         solidPrinciplesScore: undefined,
       },
     };

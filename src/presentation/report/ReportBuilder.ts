@@ -28,6 +28,7 @@ import type {
   AiSubScores,
   TimingStats,
 } from "../../core/entities/ProjectReport.js";
+import type { CodeBenchmarkResults } from "../../core/entities/CodeBenchmarkResults.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Backward-compatibility type aliases
@@ -35,8 +36,6 @@ import type {
 
 /** @deprecated Use ReviewFinding from core/entities */
 export type CodeFinding = ReviewFinding;
-/** @deprecated Use AiSubScores from core/entities */
-export type AiScores = AiSubScores;
 /** @deprecated Use ExecutiveSummary from core/entities */
 export type { ExecutiveSummary } from "../../core/entities/ProjectReport.js";
 /** @deprecated Use ReviewFinding from core/entities */
@@ -303,7 +302,8 @@ function renderExecutiveSummary(
 
 function renderScoreTable(
   overallScore: number,
-  aiScores: AiScores | undefined,
+  aiScores: AiSubScores | undefined,
+  localBenchmarks: CodeBenchmarkResults | undefined,
   isPublicFacing: boolean,
   useChalk: boolean,
 ): string {
@@ -312,20 +312,33 @@ function renderScoreTable(
 
   out += `| **Overall (Priority-Weighted)** | ${formatScore(overallScore, useChalk)} | ${riskLevelLabel(overallScore)} |\n`;
 
-  if (aiScores?.namingConventionScore !== undefined) {
-    out += `| Naming Conventions *(AI)* | ${formatScore(aiScores.namingConventionScore, useChalk)} | — |\n`;
+  // Prefer local benchmarks over legacy AI scores for better accuracy
+  const namingScoreSummary =
+    localBenchmarks?.naming.score ?? aiScores?.namingConventionScore;
+  const duplicationSummary =
+    localBenchmarks?.duplication.duplicationPercentage ??
+    aiScores?.codeDuplicationPercentage;
+  const complexitySummary =
+    localBenchmarks?.complexity.averageComplexity ??
+    aiScores?.cyclomaticComplexity;
+  const maintainabilitySummary = aiScores?.maintainabilityIndex;
+  const solidSummary = aiScores?.solidPrinciplesScore;
+
+  if (namingScoreSummary !== undefined) {
+    const src = localBenchmarks?.naming ? "local" : "AI";
+    out += `| Naming Conventions *(${src})* | ${formatScore(namingScoreSummary, useChalk)} | — |\n`;
   }
-  if (aiScores?.solidPrinciplesScore !== undefined) {
-    out += `| SOLID Principles *(AI)* | ${formatScore(aiScores.solidPrinciplesScore, useChalk)} | — |\n`;
+  if (solidSummary !== undefined) {
+    out += `| SOLID Principles *(AI)* | ${formatScore(solidSummary, useChalk)} | — |\n`;
   }
-  if (aiScores?.maintainabilityIndex !== undefined) {
-    out += `| Maintainability Index *(AI)* | ${formatScore(aiScores.maintainabilityIndex, useChalk)} | — |\n`;
+  if (maintainabilitySummary !== undefined) {
+    out += `| Maintainability Index | ${formatScore(maintainabilitySummary, useChalk)} | — |\n`;
   }
-  if (aiScores?.codeDuplicationPercentage !== undefined) {
-    out += `| Code Duplication | ${aiScores.codeDuplicationPercentage.toFixed(1)}% | — |\n`;
+  if (duplicationSummary !== undefined) {
+    out += `| Code Duplication | ${duplicationSummary.toFixed(1)}% | — |\n`;
   }
-  if (aiScores?.cyclomaticComplexity !== undefined) {
-    out += `| Avg Cyclomatic Complexity | ${aiScores.cyclomaticComplexity.toFixed(1)} | — |\n`;
+  if (complexitySummary !== undefined) {
+    out += `| Avg Cyclomatic Complexity | ${complexitySummary.toFixed(1)} | — |\n`;
   }
   out += "\n";
 
@@ -517,6 +530,36 @@ function renderCodeFindings(
   return out;
 }
 
+function renderLocalBenchmarkDetails(
+  benchmarks: CodeBenchmarkResults | undefined,
+): string {
+  if (!benchmarks) return "";
+
+  let out = "## 📈 Project Metrics (Local Analysis)\n\n";
+
+  // Complexity
+  out += `### 🧩 Complexity\n`;
+  out += `- **Average Cyclomatic Complexity:** ${benchmarks.complexity.averageComplexity.toFixed(2)}\n`;
+  out += `- **Maximum Complexity Found:** ${benchmarks.complexity.maxComplexity}\n`;
+  out += `- **Total Functions Analysed:** ${benchmarks.complexity.totalFunctions}\n`;
+  out += `- **Complexity Hotspots:** ${benchmarks.complexity.hotspots.length}\n\n`;
+
+  // Duplication
+  out += `### 👯 Duplication\n`;
+  out += `- **Duplication Percentage:** ${benchmarks.duplication.duplicationPercentage.toFixed(1)}%\n`;
+  out += `- **Duplicated Lines:** ${benchmarks.duplication.duplicatedLines} / ${benchmarks.duplication.totalLines}\n`;
+  out += `- **Top Duplicate Blocks:** ${benchmarks.duplication.topBlocks.length}\n\n`;
+
+  // Naming
+  out += `### 🏷️ Naming Conventions\n`;
+  out += `- **Score:** ${benchmarks.naming.score}/100\n`;
+  out += `- **Identifiers Checked:** ${benchmarks.naming.totalChecked}\n`;
+  out += `- **Violations Found:** ${benchmarks.naming.totalViolations}\n\n`;
+
+  out += "---\n\n";
+  return out;
+}
+
 function renderTimingStats(stats: TimingStats): string {
   const fmt = (ms: number) => `${(ms / 1000).toFixed(1)}s`;
 
@@ -570,7 +613,8 @@ export class ReportBuilder implements IReportBuilder {
   };
   private secrets: SecretFindingEntity[] = [];
   private executiveSummary?: ExecutiveSummary;
-  private aiScores?: AiScores;
+  private aiScores?: AiSubScores;
+  private localBenchmarks?: CodeBenchmarkResults;
   private timingStats?: TimingStats;
 
   // ── IReportBuilder implementation ─────────────────────────────────────────
@@ -599,8 +643,12 @@ export class ReportBuilder implements IReportBuilder {
     this.executiveSummary = summary;
   }
 
-  setAiScores(scores: AiScores): void {
+  setAiScores(scores: AiSubScores): void {
     this.aiScores = scores;
+  }
+
+  setLocalBenchmarks(benchmarks: CodeBenchmarkResults): void {
+    this.localBenchmarks = benchmarks;
   }
 
   setTimingStats(stats: TimingStats): void {
@@ -660,6 +708,7 @@ export class ReportBuilder implements IReportBuilder {
     report += renderScoreTable(
       score,
       this.aiScores,
+      this.localBenchmarks,
       this.infraResult.isPublicFacing,
       useChalk,
     );
@@ -675,6 +724,10 @@ export class ReportBuilder implements IReportBuilder {
     );
 
     report += renderCodeFindings(this.aggregated, useChalk);
+
+    if (this.localBenchmarks) {
+      report += renderLocalBenchmarkDetails(this.localBenchmarks);
+    }
 
     if (this.timingStats) {
       report += renderTimingStats(this.timingStats);
