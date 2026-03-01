@@ -327,11 +327,9 @@ export class GeminiProvider implements IAiProvider {
     /** Output directory for call logs (e.g. `<baseDir>/gemini-code-reviewer`). */
     outputDir = process.cwd(),
   ) {
-    // AiCallLogger is always-on — no debug gate
-    this.callLogger = new AiCallLogger(
-      require("node:path").join(outputDir),
-      logDebug,
-    );
+    // FIX: was require("node:path").join(outputDir) which crashes in ESM.
+    // path.join(singleArg) is a no-op anyway — pass outputDir directly.
+    this.callLogger = new AiCallLogger(outputDir, logDebug);
   }
 
   // ── IAiProvider.reviewProject ──────────────────────────────────────────────
@@ -356,7 +354,7 @@ export class GeminiProvider implements IAiProvider {
     return { codeFindings: this.extractCodeFindings(parsed), subScores: this.extractSubScores(parsed) };
   }
 
-  // ── IAiProvider.reviewInfrastructure ─────────────────────────────────────────
+  // ── IAiProvider.reviewInfrastructure ──────────────────────────────────────────────
 
   async reviewInfrastructure(request: InfraReviewRequest): Promise<InfraReviewResult> {
     const model = GeminiModel.FLASH;
@@ -376,7 +374,7 @@ export class GeminiProvider implements IAiProvider {
     return { infraFindings: this.extractInfraFindings(parsed) };
   }
 
-  // ── IAiProvider.generateExecutiveSummary ─────────────────────────────────
+  // ── IAiProvider.generateExecutiveSummary ───────────────────────────────────────
 
   async generateExecutiveSummary(input: ExecutiveSummaryInput): Promise<ExecutiveSummary | undefined> {
     const model = GeminiModel.FLASH;
@@ -404,7 +402,7 @@ export class GeminiProvider implements IAiProvider {
     }
   }
 
-  // ── IAiProvider.generateSkills ───────────────────────────────────────────
+  // ── IAiProvider.generateSkills ──────────────────────────────────────────────
 
   async generateSkills(prompt: string): Promise<Record<string, string>> {
     const model = GeminiModel.FLASH;
@@ -422,7 +420,7 @@ export class GeminiProvider implements IAiProvider {
     return parsed;
   }
 
-  // ── IAiProvider.auditInfra (Call 1) ────────────────────────────────────────
+  // ── IAiProvider.auditInfra (Call 1) ───────────────────────────────────────────
 
   async auditInfra(request: InfraAuditRequest): Promise<InfraAuditResult> {
     const model = GeminiModel.FLASH;
@@ -444,7 +442,7 @@ export class GeminiProvider implements IAiProvider {
     return parsed;
   }
 
-  // ── IAiProvider.deepReview (Call 2) ───────────────────────────────────────
+  // ── IAiProvider.deepReview (Call 2) ───────────────────────────────────────────
 
   async deepReview(request: DeepReviewRequest): Promise<DeepReviewResult> {
     const model = GeminiModel.FLASH;
@@ -490,7 +488,7 @@ export class GeminiProvider implements IAiProvider {
   private buildDeepReviewUserPrompt(request: DeepReviewRequest): string {
     const sections: string[] = [];
     const fileCount = Object.keys(request.fileContents).length;
-    sections.push(`## High-Impact Files Under Review (${fileCount} files)\n> Selected by infra audit (weight ≥ threshold, not ignored).`);
+    sections.push(`## High-Impact Files Under Review (${fileCount} files)\n> Selected by infra audit (weight \u2265 threshold, not ignored).`);
     for (const [filePath, content] of Object.entries(request.fileContents)) {
       const ext = filePath.split(".").pop() ?? "";
       sections.push(`### ${filePath}\n\`\`\`${ext}\n${content}\n\`\`\``);
