@@ -117,11 +117,14 @@ program
       await feedbackStore.load();
 
       // Build the DI container
+      // FIX: baseDir must be passed so DependencyContainer can resolve the
+      //      AI call log output path (<baseDir>/gemini-code-reviewer/ai-calls/).
       const config: ContainerConfig = {
         accessToken,
         cloudProject,
         logDebug,
         feedbackManager: feedbackStore,
+        baseDir: options.dir,
       };
       const container = DependencyContainer.create(config);
 
@@ -194,11 +197,15 @@ program
       // │  │  : RunCodeReview  │  │  : BootstrapProject          │  │
       // │  └───────────────────┘  └──────────────────────────────┘  │
       // └────────────────────────────────────────────────────────────┘
+      //
+      // FIX: baseDir must be passed so DependencyContainer can resolve the
+      //      AI call log output path (<baseDir>/gemini-code-reviewer/ai-calls/).
       const config: ContainerConfig = {
         accessToken,
         cloudProject,
         logDebug,
         feedbackManager: feedbackStore,
+        baseDir: targetDir,
       };
       const container = DependencyContainer.create(config);
 
@@ -266,6 +273,7 @@ program
       if (report.aiSubScores) builder.setAiScores(report.aiSubScores);
       if (report.executiveSummary)
         builder.setExecutiveSummary(report.executiveSummary);
+      if (report.timingStats) builder.setTimingStats(report.timingStats);
 
       const finalScore = builder.calculateFinalScore();
       const consoleOutput = builder.build(true);
