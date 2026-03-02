@@ -1,6 +1,6 @@
 {
   "name": "gemini-code-reviewer",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "AI-powered code reviewer using Google Gemini, with smart file scanning and best-practices injection.",
   "type": "module",
   "main": "dist/index.js",
