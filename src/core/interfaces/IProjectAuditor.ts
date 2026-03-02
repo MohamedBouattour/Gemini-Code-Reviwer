@@ -1,100 +1,59 @@
 // Copyright 2026 Google LLC
 
 /**
- * IProjectAuditor — the Open/Closed extension point for the auditor pipeline.
+ * IProjectAuditor — pipeline step interface.
  *
- * Lives in the Core layer. Zero infrastructure imports.
+ * Each auditor receives an AuditContext (project snapshot) and returns
+ * an AuditResult contributing findings to the final report.
  *
- * ## Open/Closed Principle in action
- *
- * RunCodeReview iterates an `IProjectAuditor[]` pipeline. To add a new auditor
- * (e.g. LicenseAuditor, DependencyAgeAuditor), you:
- *   1. Create a new class that implements IProjectAuditor.
- *   2. Register it in DependencyContainer.
- *   3. Done — zero changes to RunCodeReview or any other use case.
- *
- * Each auditor is responsible for ONE cross-cutting concern (SRP).
+ * AuditContext carries `logDebug` so AI-backed auditors can emit debug
+ * lines without depending on the Logger utility directly.
  */
 
+import type { CodeSegment } from "../entities/CodeSegment.js";
 import type { ReviewFinding } from "../entities/ReviewFinding.js";
 import type {
   SecretFindingEntity,
   InfraFindingEntity,
 } from "../entities/ProjectReport.js";
-import type { CodeSegment } from "../entities/CodeSegment.js";
+import type { CodeBenchmarkResults } from "../entities/CodeBenchmarkResults.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Shared input handed to every auditor
+// AuditContext
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * AuditContext — the read-only view of the project that auditors receive.
- *
- * Auditors MUST NOT mutate this; they produce AuditResult values instead.
- */
 export interface AuditContext {
-  /** All scanned source files (with both original and minified content). */
+  /** Source code files (changed-only when incremental review is active). */
   codeFiles: CodeSegment[];
-  /** IaC files (Dockerfile, .tf, k8s yaml, etc.) keyed by relative path. */
+  /** IaC files keyed by relative path. */
   iacFiles: Record<string, string>;
-  /** Package manifests (package.json, pom.xml, etc.) keyed by relative path. */
+  /** Dependency manifests keyed by filename. */
   dependencyManifests: Record<string, string>;
-  /** Whether IaC analysis detected internet-facing infrastructure. */
+  /** True when IaC heuristics detect public internet exposure. */
   isPublicFacing: boolean;
+  /** Optional debug logger — respects the --debug flag. */
+  logDebug?: (msg: string) => void;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Output produced by each auditor
+// AuditResult
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * AuditResult — what each auditor returns.
- *
- * Fields are optional; an auditor only populates what it produces.
- */
 export interface AuditResult {
-  /** Static code / security findings (local SAST, no AI call). */
   codeFindings?: ReviewFinding[];
-  /** Hardcoded secret detections. */
   secretFindings?: SecretFindingEntity[];
-  /** IaC / SCA misconfigurations (may involve an AI call via IAiProvider). */
   infraFindings?: InfraFindingEntity[];
-  /** Files scanned by this auditor (for display in the report). */
   scannedFiles?: string[];
-  /** If this auditor determined internet-facing status, it can override. */
   isPublicFacing?: boolean;
+  benchmarks?: CodeBenchmarkResults;
+  benchmarkScores?: import("../entities/ProjectReport.js").AiSubScores;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// IProjectAuditor — the contract
+// IProjectAuditor
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * IProjectAuditor
- *
- * A single, focused analysis step run as part of the auditor pipeline.
- *
- * Current implementations:
- *   - StaticSecurityAuditor  (regex-based secret detection, zero AI cost)
- *   - InfraStructureAuditor  (IaC/SCA via IAiProvider)
- *
- * Future extensions (no changes to RunCodeReview required):
- *   - LicenseAuditor         (checks SPDX identifiers in manifests)
- *   - DependencyAgeAuditor   (flags packages > N months old)
- *   - SBOMAuditor            (generates a CycloneDX SBOM)
- */
 export interface IProjectAuditor {
-  /**
-   * Human-readable name for logging / spinner text.
-   * Example: "Secrets pre-scan (SAST)"
-   */
   readonly name: string;
-
-  /**
-   * Execute the audit.
-   *
-   * @param context  The project files available for analysis.
-   * @returns        Findings produced by this auditor.
-   */
   audit(context: AuditContext): Promise<AuditResult>;
 }

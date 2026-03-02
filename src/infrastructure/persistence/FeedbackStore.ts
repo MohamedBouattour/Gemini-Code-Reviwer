@@ -23,6 +23,10 @@
 import * as nodefs from "node:fs/promises";
 import * as path from "node:path";
 import crypto from "node:crypto";
+import {
+  FEEDBACK_SYSTEM_PROMPT_SUFFIX_INTRO,
+  FEEDBACK_SYSTEM_PROMPT_SUFFIX_OUTRO,
+} from "../ai/prompts.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Value types
@@ -114,11 +118,7 @@ export class FeedbackStore {
   buildSystemPromptSuffix(): string {
     if (!this.hasFeedback) return "";
 
-    const lines = [
-      "\n\n## ⚠️ User-Confirmed False Positives (DO NOT RE-FLAG THESE)",
-      "The following patterns were previously confirmed as intentional or not applicable.",
-      "Do NOT flag similar patterns again:\n",
-    ];
+    const lines = [FEEDBACK_SYSTEM_PROMPT_SUFFIX_INTRO];
 
     for (const entry of this.store.entries) {
       lines.push(
@@ -129,10 +129,7 @@ export class FeedbackStore {
       );
     }
 
-    lines.push(
-      "\nIf you see structurally identical code elsewhere, mention it only if the",
-      "context is significantly different (e.g., public-facing vs internal utility).",
-    );
+    lines.push(FEEDBACK_SYSTEM_PROMPT_SUFFIX_OUTRO);
 
     return lines.join("\n");
   }

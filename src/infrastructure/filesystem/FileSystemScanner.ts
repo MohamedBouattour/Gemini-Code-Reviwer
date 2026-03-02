@@ -21,7 +21,7 @@
 import fg from "fast-glob";
 import fs from "fs/promises";
 import * as path from "path";
-
+import { LanguageStrategyManager } from "../analysis/languages/LanguageStrategyManager.js";
 import type { IFileScanner } from "../../core/interfaces/IFileScanner.js";
 import type { ScannedProject } from "../../core/interfaces/IFileScanner.js";
 import type { CodeSegment } from "../../core/entities/CodeSegment.js";
@@ -32,44 +32,16 @@ import type { CodeSegment } from "../../core/entities/CodeSegment.js";
 
 /**
  * Minify source content to reduce token cost for the AI prompt.
- *
- * Operations (in order):
- *  1. Strip inner SVG path data (large, irrelevant to logic).
- *  2. Remove multi-line comments  /* ... *​/
- *  3. Remove single-line comments // ...  (preserves URLs like https://)
- *  4. Remove JS/TS import statements.
- *  5. Remove Java import statements.
- *  6. Collapse all whitespace to a single space.
+ * Delegates to language-specific strategies.
  */
-export function optimizeContent(content: string): string {
-  let optimized = content.replace(/\r\n/g, "\n");
-
-  // 1. Strip inner paths from SVG elements
-  optimized = optimized.replace(
-    /(<svg\b[^>]*>)(.*?)(<\/svg>)/gs,
-    (_match, p1, _p2, p3) => p1 + p3,
-  );
-
-  // 2. Remove multi-line comments /* ... */
-  optimized = optimized.replace(/\/\*[\s\S]*?\*\//g, "");
-
-  // 3. Remove single-line comments // ... (preserve https://)
-  optimized = optimized.replace(/(?<!https?:)\/\/.*$/gm, "");
-
-  // 4a. JS/TS: `import ... from '...'`
-  optimized = optimized.replace(
-    /^\s*import\s+[^;]*?from\s+['"].*?['"]\s*;/gm,
-    "",
-  );
-  // 4b. JS/TS: bare `import '...'`
-  optimized = optimized.replace(/^\s*import\s+['"].*?['"]\s*;/gm, "");
-  // 4c. Java: `import java.util.List;` / `import static ...;`
-  optimized = optimized.replace(/^\s*import\s+(?:static\s+)?[\w.*]+\s*;/gm, "");
-
-  // 5. Collapse whitespace
-  optimized = optimized.replace(/\s+/g, " ").trim();
-
-  return optimized;
+export function optimizeContent(filePath: string, content: string): string {
+  try {
+    const strategy = LanguageStrategyManager.getStrategy(filePath);
+    return strategy.stripCommentsAndImports(content);
+  } catch {
+    // Fallback if strategy fails
+    return content.replace(/\s+/g, " ").trim();
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -123,7 +95,7 @@ export class FileSystemScanner implements IFileScanner {
     for (const filePath of filePaths) {
       try {
         const rawContent = await fs.readFile(filePath, "utf-8");
-        const optimizedContent = optimizeContent(rawContent);
+        const optimizedContent = optimizeContent(filePath, rawContent);
         const relativePath = path.relative(baseDir, filePath);
         codeFiles.push({
           filePath: relativePath,

@@ -122,3 +122,6 @@ dist
 
 # Mac OS X directory details
 .DS_Store
+
+
+settings.json

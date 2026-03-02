@@ -1,0 +1,912 @@
+{
+  "fileHashes": {
+    "src\\application\\BootstrapProject.ts": "bbac1b5cafd68937ab166837d189f6ee1704e98645fa7405393fbcb19091ce80",
+    "src\\application\\RunCodeReview.ts": "0692993d8248ed603ef9d8ee03e7b7d1ba500d12f38b21430b91c66277286433",
+    "src\\shared\\constants.ts": "e9d9580bb8861afd011a06d86c1e9dd77c773602ad21d2ba2ec66dd7728a7ccc",
+    "src\\core\\entities\\CodeBenchmarkResults.ts": "ee03a6b3a136c94239ac076a8f020341f3b4894cd4895342a4287c47e7b517ff",
+    "src\\core\\entities\\CodeSegment.ts": "890618897e0e9b7c475139d795eba71855aea1d581380a950c4eefe77a25f451",
+    "src\\core\\entities\\ProjectReport.ts": "f65b06ffdfcee586f7658bc2a0a9d9bff847215ee82a6efe6b728720bf0b49fa",
+    "src\\core\\entities\\ReviewFinding.ts": "885d74ec9e6b62a54f152a6df62a3b981839435120cef69f3e17025e8fdce1ad",
+    "src\\core\\domain-errors\\ReviewerErrors.ts": "8962a2bc017ff9eefecd9a2d44e705810891cc14e53da34e88960102e39a6843",
+    "src\\core\\interfaces\\IAiProvider.ts": "2218120400a6c5194059a85a9f05e2369477d0f87861711fe32df3849b077b74",
+    "src\\core\\interfaces\\IFileScanner.ts": "12c6d6eff4bc3102c2a23f8ada17b79c6258580789b6d1b5be5b373426b87768",
+    "src\\core\\interfaces\\IProjectAuditor.ts": "bd7276181d13b484903e97f8b349d6f6dc6a5d9380dfcd5f648e0435aaf3bb2a",
+    "src\\core\\interfaces\\IReportBuilder.ts": "f50ff11c04127450446a1e4c24190c55bcad21e7dcb124e4e6f4193edcea3f3e",
+    "src\\core\\interfaces\\ISkillRepository.ts": "0576865c228ab166fad03d3cc35e8403a505d4cc1062ec4f28127d3a34a5c641",
+    "src\\infrastructure\\ai\\AiCallLogger.ts": "7e0871083ccc5e8e6baf316bb2b1f14fbb5c9bc37394f8ebe19b86bd0fcd20e3",
+    "src\\infrastructure\\ai\\GeminiAiProvider.ts": "9adf9f7b61f17360ad2c603ac63700a4111eccff49a0d50341138a22860081be",
+    "src\\infrastructure\\ai\\GeminiProvider.ts": "4e70cc7f1685486e67fd6658548cad9abf94e331b0d5179d97db0366ed91cf68",
+    "src\\infrastructure\\ai\\prompts.ts": "cb8e60b5f22588e93b8215b99a820ec424f7b57e197e64ad7cd96cda9d4fa40c",
+    "src\\infrastructure\\auth\\GoogleAuth.ts": "6ff76dcad9c46d227e1ef0cbb87bf10a4b391b2b2357295a1067a83f4920d30c",
+    "src\\infrastructure\\benchmark\\CodeBenchmarkAuditor.ts": "b32e7a2b77cac343e584f2dbbc652e4ed47e9bb048b00129551a4a9aa1770640",
+    "src\\infrastructure\\benchmark\\ComplexityAnalyzer.ts": "cc1119413a58742f6838d7b11ba58528637fd80d2ea0d84509b8ab7fe1a4e9df",
+    "src\\infrastructure\\benchmark\\DuplicationAnalyzer.ts": "763e06544573410546261bdf1e7232ffabd4547f591ce20533ad637810ed406d",
+    "src\\infrastructure\\benchmark\\NamingConventionAnalyzer.ts": "1d025867d1b94b6fb3a7387ebaaf3a94dffda2e8e8b96171f22ca7ccd9511342",
+    "src\\infrastructure\\config\\ConfigurationAuditor.ts": "1a9808ed6c1b5de20620166a4aab97ee111e1f854c85f0b3b32d5e94a71fe01c",
+    "src\\infrastructure\\config\\LocalSkillRepository.ts": "190b9ddff4ddd745028a33738051ff4ccaf6de2d6b3864661798b31306323a50",
+    "src\\infrastructure\\config\\SkillSetRepository.ts": "677ed0431a155452d1fbbba9a9bfd45768f02fb4e0a00e91681391796ca7bdb6",
+    "src\\infrastructure\\filesystem\\FileSystemScanner.ts": "a967c66afc2ddbab259ee1be02e35f4b7503509b4a41bb73686b8c8623ad2b96",
+    "src\\infrastructure\\filesystem\\ProjectScanner.ts": "94f30072a9e96c5d81fdcb7cacc32dc98a51683a8a9f715d1ec8a62f7d300a6c",
+    "src\\infrastructure\\persistence\\FeedbackStore.ts": "7456afc2bb307327b80297c049c0ba3e5dc10e21546236538bf316280352bef8",
+    "src\\infrastructure\\security\\exposureDetector.ts": "57c6264ca8db7970961d667a89471c9b6485a672f1a1ef56c220f61bb8eb6447",
+    "src\\infrastructure\\security\\InfraAuditorAdapter.ts": "3a1589fc89a6f9de65c0688757abd1a7dd339814d37b7c92e43dd258be090264",
+    "src\\infrastructure\\security\\StaticSecurityAuditor.ts": "92f241b64935331d554460613d8b177e560b530c0ab01c068180a58769a70dc3",
+    "src\\presentation\\cli\\DependencyContainer.ts": "72e649c4685fa338a5a8012d43e086ed341fb29d4004fe37871ff406f4783d7f",
+    "src\\presentation\\cli\\main.ts": "71a29b5053fd7270971e273df36b3b1f4c53e897795db77d094c3894ec82b3e3",
+    "src\\presentation\\report\\ReportBuilder.ts": "e787c1bd9927a759b63116bc15f4365e42add138fe5b8bf7812032df89cba34e",
+    "src\\shared\\utils\\Logger.ts": "c08a79b7a90d20c6c19fb7f346576af998dc5a425df785d3d495c976e2820fa2"
+  },
+  "iacFileHashes": {},
+  "manifestHashes": {
+    "package.json": "7598dc95436e7602894302bb4883c591e4951bae41ba9508be52ebe12716e792"
+  },
+  "findings": [
+    {
+      "file": "src\\infrastructure\\benchmark\\NamingConventionAnalyzer.ts",
+      "line": 104,
+      "snippet": "analyze",
+      "suggestion": "Cyclomatic complexity exceeds threshold (10). Consider breaking this function into smaller, more manageable units.",
+      "category": "Complexity",
+      "priority": "high",
+      "riskMultiplier": 1
+    },
+    {
+      "file": "src\\application\\RunCodeReview.ts",
+      "line": 115,
+      "snippet": "execute",
+      "suggestion": "Cyclomatic complexity exceeds threshold (10). Consider breaking this function into smaller, more manageable units.",
+      "category": "Complexity",
+      "priority": "high",
+      "riskMultiplier": 1
+    },
+    {
+      "file": "src\\application\\BootstrapProject.ts",
+      "line": 82,
+      "snippet": "execute",
+      "suggestion": "Cyclomatic complexity exceeds threshold (10). Consider breaking this function into smaller, more manageable units.",
+      "category": "Complexity",
+      "priority": "high",
+      "riskMultiplier": 1
+    },
+    {
+      "file": "src\\presentation\\report\\ReportBuilder.ts",
+      "line": 143,
+      "snippet": "aggregateFindings",
+      "suggestion": "Cyclomatic complexity exceeds threshold (10). Consider breaking this function into smaller, more manageable units.",
+      "category": "Complexity",
+      "priority": "medium",
+      "riskMultiplier": 1
+    },
+    {
+      "file": "src\\infrastructure\\benchmark\\DuplicationAnalyzer.ts",
+      "line": 56,
+      "snippet": "analyze",
+      "suggestion": "Cyclomatic complexity exceeds threshold (10). Consider breaking this function into smaller, more manageable units.",
+      "category": "Complexity",
+      "priority": "medium",
+      "riskMultiplier": 1
+    },
+    {
+      "file": "src\\infrastructure\\security\\InfraAuditorAdapter.ts",
+      "line": 6,
+      "snippet": "audit",
+      "suggestion": "Cyclomatic complexity exceeds threshold (10). Consider breaking this function into smaller, more manageable units.",
+      "category": "Complexity",
+      "priority": "medium",
+      "riskMultiplier": 1
+    },
+    {
+      "file": "src\\application\\BootstrapProject.ts",
+      "line": 54,
+      "snippet": "SkillFileInfo",
+      "suggestion": "Naming violation: identifier does not follow the interface-missing-i-prefix convention for this project.",
+      "category": "Naming",
+      "priority": "low",
+      "riskMultiplier": 1
+    },
+    {
+      "file": "src\\application\\BootstrapProject.ts",
+      "line": 61,
+      "snippet": "BootstrapProjectInput",
+      "suggestion": "Naming violation: identifier does not follow the interface-missing-i-prefix convention for this project.",
+      "category": "Naming",
+      "priority": "low",
+      "riskMultiplier": 1
+    },
+    {
+      "file": "src\\application\\RunCodeReview.ts",
+      "line": 67,
+      "snippet": "RunCodeReviewInput",
+      "suggestion": "Naming violation: identifier does not follow the interface-missing-i-prefix convention for this project.",
+      "category": "Naming",
+      "priority": "low",
+      "riskMultiplier": 1
+    },
+    {
+      "file": "src\\application\\RunCodeReview.ts",
+      "line": 75,
+      "snippet": "RunCodeReviewOutput",
+      "suggestion": "Naming violation: identifier does not follow the interface-missing-i-prefix convention for this project.",
+      "category": "Naming",
+      "priority": "low",
+      "riskMultiplier": 1
+    },
+    {
+      "file": "src\\application\\RunCodeReview.ts",
+      "line": 84,
+      "snippet": "CacheState",
+      "suggestion": "Naming violation: identifier does not follow the interface-missing-i-prefix convention for this project.",
+      "category": "Naming",
+      "priority": "low",
+      "riskMultiplier": 1
+    },
+    {
+      "file": "src\\core\\entities\\CodeBenchmarkResults.ts",
+      "line": 17,
+      "snippet": "FunctionComplexity",
+      "suggestion": "Naming violation: identifier does not follow the interface-missing-i-prefix convention for this project.",
+      "category": "Naming",
+      "priority": "low",
+      "riskMultiplier": 1
+    },
+    {
+      "file": "src\\core\\entities\\CodeBenchmarkResults.ts",
+      "line": 28,
+      "snippet": "ComplexityReport",
+      "suggestion": "Naming violation: identifier does not follow the interface-missing-i-prefix convention for this project.",
+      "category": "Naming",
+      "priority": "low",
+      "riskMultiplier": 1
+    },
+    {
+      "file": "src\\core\\entities\\CodeBenchmarkResults.ts",
+      "line": 44,
+      "snippet": "DuplicateBlock",
+      "suggestion": "Naming violation: identifier does not follow the interface-missing-i-prefix convention for this project.",
+      "category": "Naming",
+      "priority": "low",
+      "riskMultiplier": 1
+    },
+    {
+      "file": "src\\core\\entities\\CodeBenchmarkResults.ts",
+      "line": 53,
+      "snippet": "DuplicationReport",
+      "suggestion": "Naming violation: identifier does not follow the interface-missing-i-prefix convention for this project.",
+      "category": "Naming",
+      "priority": "low",
+      "riskMultiplier": 1
+    },
+    {
+      "file": "src\\core\\entities\\CodeBenchmarkResults.ts",
+      "line": 68,
+      "snippet": "NamingViolation",
+      "suggestion": "Naming violation: identifier does not follow the interface-missing-i-prefix convention for this project.",
+      "category": "Naming",
+      "priority": "low",
+      "riskMultiplier": 1
+    },
+    {
+      "file": "src\\core\\entities\\CodeBenchmarkResults.ts",
+      "line": 88,
+      "snippet": "NamingConventionReport",
+      "suggestion": "Naming violation: identifier does not follow the interface-missing-i-prefix convention for this project.",
+      "category": "Naming",
+      "priority": "low",
+      "riskMultiplier": 1
+    },
+    {
+      "file": "src\\core\\entities\\CodeBenchmarkResults.ts",
+      "line": 4,
+      "snippet": "CodeBenchmarkResults",
+      "suggestion": "Naming violation: identifier does not follow the interface-missing-i-prefix convention for this project.",
+      "category": "Naming",
+      "priority": "low",
+      "riskMultiplier": 1
+    },
+    {
+      "file": "src\\core\\entities\\CodeSegment.ts",
+      "line": 4,
+      "snippet": "CodeSegment",
+      "suggestion": "Naming violation: identifier does not follow the interface-missing-i-prefix convention for this project.",
+      "category": "Naming",
+      "priority": "low",
+      "riskMultiplier": 1
+    },
+    {
+      "file": "src\\core\\entities\\ProjectReport.ts",
+      "line": 19,
+      "snippet": "SecretFindingEntity",
+      "suggestion": "Naming violation: identifier does not follow the interface-missing-i-prefix convention for this project.",
+      "category": "Naming",
+      "priority": "low",
+      "riskMultiplier": 1
+    },
+    {
+      "file": "src\\core\\entities\\ProjectReport.ts",
+      "line": 28,
+      "snippet": "InfraFindingEntity",
+      "suggestion": "Naming violation: identifier does not follow the interface-missing-i-prefix convention for this project.",
+      "category": "Naming",
+      "priority": "low",
+      "riskMultiplier": 1
+    },
+    {
+      "file": "src\\core\\entities\\ProjectReport.ts",
+      "line": 38,
+      "snippet": "ExecutiveSummary",
+      "suggestion": "Naming violation: identifier does not follow the interface-missing-i-prefix convention for this project.",
+      "category": "Naming",
+      "priority": "low",
+      "riskMultiplier": 1
+    },
+    {
+      "file": "src\\core\\entities\\ProjectReport.ts",
+      "line": 50,
+      "snippet": "AiSubScores",
+      "suggestion": "Naming violation: identifier does not follow the interface-missing-i-prefix convention for this project.",
+      "category": "Naming",
+      "priority": "low",
+      "riskMultiplier": 1
+    },
+    {
+      "file": "src\\core\\entities\\ProjectReport.ts",
+      "line": 58,
+      "snippet": "TimingStats",
+      "suggestion": "Naming violation: identifier does not follow the interface-missing-i-prefix convention for this project.",
+      "category": "Naming",
+      "priority": "low",
+      "riskMultiplier": 1
+    },
+    {
+      "file": "src\\core\\entities\\ProjectReport.ts",
+      "line": 4,
+      "snippet": "ProjectReport",
+      "suggestion": "Naming violation: identifier does not follow the interface-missing-i-prefix convention for this project.",
+      "category": "Naming",
+      "priority": "low",
+      "riskMultiplier": 1
+    },
+    {
+      "file": "src\\core\\entities\\ReviewFinding.ts",
+      "line": 19,
+      "snippet": "RecommendedFix",
+      "suggestion": "Naming violation: identifier does not follow the interface-missing-i-prefix convention for this project.",
+      "category": "Naming",
+      "priority": "low",
+      "riskMultiplier": 1
+    },
+    {
+      "file": "src/infrastructure/benchmark/NamingConventionAnalyzer.ts",
+      "line": 1,
+      "snippet": "if ( trimmed.startsWith(\" trimmed.startsWith(\"*\") || trimmed.startsWith(\"/*\") )",
+      "suggestion": "Correct the syntax error to `if (trimmed.startsWith(\"//\") || trimmed.startsWith(\"*\") || trimmed.startsWith(\"/*\")) continue;`.",
+      "category": "RELIABILITY",
+      "priority": "high",
+      "riskMultiplier": 1
+    },
+    {
+      "file": "src/infrastructure/benchmark/NamingConventionAnalyzer.ts",
+      "line": 1,
+      "snippet": "Numerous `_RE` constants and their usage.",
+      "suggestion": "Use an AST parser (e.g., `typescript-eslint` parser) to accurately identify declarations.",
+      "category": "RELIABILITY",
+      "priority": "medium",
+      "riskMultiplier": 1
+    },
+    {
+      "file": "src/infrastructure/benchmark/NamingConventionAnalyzer.ts",
+      "line": 1,
+      "snippet": "const checks: Array<{ re: RegExp; kind: NamingViolationKind; predicate: (n: string) => boolean; suggest: (n: string) => string; }>",
+      "suggestion": "If moving to an AST, define rules as visitors or simpler predicates on AST nodes.",
+      "category": "MAINTAINABILITY",
+      "priority": "medium",
+      "riskMultiplier": 1
+    },
+    {
+      "file": "src/infrastructure/benchmark/NamingConventionAnalyzer.ts",
+      "line": 1,
+      "snippet": "const SKIP_NAMES = new Set([...])",
+      "suggestion": "Allow `SKIP_NAMES` to be configurable, perhaps loaded from a file or passed as an option.",
+      "category": "MAINTAINABILITY",
+      "priority": "low",
+      "riskMultiplier": 1
+    },
+    {
+      "file": "src/infrastructure/auth/GoogleAuth.ts",
+      "line": 1,
+      "snippet": "getCoreOAuthCredentials() function.",
+      "suggestion": "Obtain OAuth client ID/secret from Google Cloud Console and manage them securely (e.g., environment variables).",
+      "category": "SECURITY",
+      "priority": "high",
+      "riskMultiplier": 1
+    },
+    {
+      "file": "src/infrastructure/auth/GoogleAuth.ts",
+      "line": 1,
+      "snippet": "try { ... } catch { ... } blocks in `loadCachedCredentials` and `clearCachedCredentials`.",
+      "suggestion": "Log errors at a higher level (e.g., `console.error`) for credential persistence failures, or provide user-facing messages.",
+      "category": "RELIABILITY",
+      "priority": "medium",
+      "riskMultiplier": 1
+    },
+    {
+      "file": "src/infrastructure/auth/GoogleAuth.ts",
+      "line": 1,
+      "snippet": "new url.URL(req.url!, \"http://127.0.0.1:3000\").searchParams;",
+      "suggestion": "Ensure the base URL for `url.URL` accurately reflects the server's listening address and port.",
+      "category": "SECURITY",
+      "priority": "low",
+      "riskMultiplier": 1
+    },
+    {
+      "file": "src/infrastructure/auth/GoogleAuth.ts",
+      "line": 1,
+      "snippet": "if (!res.ok) throw new Error(`HTTP ${res.status}`);",
+      "suggestion": "Include the response body or a more detailed error message from the API in the thrown error.",
+      "category": "RELIABILITY",
+      "priority": "low",
+      "riskMultiplier": 1
+    },
+    {
+      "file": "src/infrastructure/benchmark/DuplicationAnalyzer.ts",
+      "line": 1,
+      "snippet": "if (trimmed.startsWith(\" if (trimmed.startsWith(\"",
+      "suggestion": "Remove the incomplete line or complete its logic if it's intended to be part of the normalization.",
+      "category": "RELIABILITY",
+      "priority": "medium",
+      "riskMultiplier": 1
+    },
+    {
+      "file": "src/infrastructure/benchmark/DuplicationAnalyzer.ts",
+      "line": 1,
+      "snippet": "`normaliseLine` implementation.",
+      "suggestion": "Enhance `normaliseLine` to strip comments and normalize string literals, or consider using an AST-based approach.",
+      "category": "RELIABILITY",
+      "priority": "medium",
+      "riskMultiplier": 1
+    },
+    {
+      "file": "src/infrastructure/benchmark/DuplicationAnalyzer.ts",
+      "line": 1,
+      "snippet": "`hashWindow` implementation.",
+      "suggestion": "For performance-critical scenarios, consider using a more optimized hashing library or algorithm.",
+      "category": "PERFORMANCE",
+      "priority": "low",
+      "riskMultiplier": 1
+    },
+    {
+      "file": "src/infrastructure/security/StaticSecurityAuditor.ts",
+      "line": 1,
+      "snippet": "`SECRET_RULES` array.",
+      "suggestion": "Supplement regex with more advanced SAST tools or techniques (e.g., taint analysis, semantic analysis).",
+      "category": "SECURITY",
+      "priority": "medium",
+      "riskMultiplier": 1
+    },
+    {
+      "file": "src/infrastructure/security/StaticSecurityAuditor.ts",
+      "line": 1,
+      "snippet": "`EXCLUSION_PATTERNS` array.",
+      "suggestion": "Allow `EXCLUSION_PATTERNS` to be configurable and extensible by users.",
+      "category": "SECURITY",
+      "priority": "medium",
+      "riskMultiplier": 1
+    },
+    {
+      "file": "src/infrastructure/security/StaticSecurityAuditor.ts",
+      "line": 1,
+      "snippet": "`extractStringLiterals` implementation.",
+      "suggestion": "Use an AST parser to accurately extract string literals, which is more robust than regex.",
+      "category": "RELIABILITY",
+      "priority": "medium",
+      "riskMultiplier": 1
+    },
+    {
+      "file": "src/infrastructure/security/StaticSecurityAuditor.ts",
+      "line": 1,
+      "snippet": "return value.slice(0, 10) + \"***[REDACTED]\";",
+      "suggestion": "Consider full redaction (e.g., `***[REDACTED]`) or configurable redaction levels.",
+      "category": "SECURITY",
+      "priority": "low",
+      "riskMultiplier": 1
+    },
+    {
+      "file": "src/application/RunCodeReview.ts",
+      "line": 1,
+      "snippet": "previousState.findings as ReviewFinding[]",
+      "suggestion": "Define specific types for cached findings in `CacheState` to ensure type safety. Implement robust schema validation.",
+      "category": "RELIABILITY",
+      "priority": "medium",
+      "riskMultiplier": 1
+    },
+    {
+      "file": "src/application/RunCodeReview.ts",
+      "line": 1,
+      "snippet": "(state.findings as ReviewFinding[]) ?? []",
+      "suggestion": "Implement a cache versioning and migration strategy, or a validation layer when loading from cache.",
+      "category": "RELIABILITY",
+      "priority": "medium",
+      "riskMultiplier": 1
+    },
+    {
+      "file": "src/application/RunCodeReview.ts",
+      "line": 1,
+      "snippet": "this.resolveLineNumber(fileMatch.originalContent, finding.snippet)",
+      "suggestion": "Optimize `resolveLineNumber` by pre-calculating line mappings or using a more efficient search algorithm.",
+      "category": "PERFORMANCE",
+      "priority": "medium",
+      "riskMultiplier": 1
+    },
+    {
+      "file": "src/application/RunCodeReview.ts",
+      "line": 1,
+      "snippet": "`mergeAuditResults` implementation.",
+      "suggestion": "Consider a more generic merge utility or a pattern that automatically handles new fields.",
+      "category": "MAINTAINABILITY",
+      "priority": "low",
+      "riskMultiplier": 1
+    },
+    {
+      "file": "src/application/RunCodeReview.ts",
+      "line": 1,
+      "snippet": "`getRiskMultiplier` function.",
+      "suggestion": "Externalize risk multiplier rules into a configuration file or a dedicated `RiskAssessmentService`.",
+      "category": "MAINTAINABILITY",
+      "priority": "low",
+      "riskMultiplier": 1
+    },
+    {
+      "file": "src/infrastructure/benchmark/ComplexityAnalyzer.ts",
+      "line": 1,
+      "snippet": "`FUNCTION_START_RE`, `DECISION_POINT_RE`.",
+      "suggestion": "Consider using a proper AST parser (e.g., `typescript-eslint` parser for TS/JS) for accurate analysis.",
+      "category": "RELIABILITY",
+      "priority": "medium",
+      "riskMultiplier": 1
+    },
+    {
+      "file": "src/infrastructure/benchmark/ComplexityAnalyzer.ts",
+      "line": 1,
+      "snippet": "`stripStringsAndComments` implementation.",
+      "suggestion": "Using an AST parser would be more reliable for preprocessing code before analysis.",
+      "category": "RELIABILITY",
+      "priority": "medium",
+      "riskMultiplier": 1
+    },
+    {
+      "file": "src/infrastructure/benchmark/ComplexityAnalyzer.ts",
+      "line": 1,
+      "snippet": "`analyzeFile` method.",
+      "suggestion": "Refactor the parsing logic, ideally leveraging an AST, to simplify function boundary detection and complexity counting.",
+      "category": "MAINTAINABILITY",
+      "priority": "medium",
+      "riskMultiplier": 1
+    },
+    {
+      "file": "src/infrastructure/filesystem/FileSystemScanner.ts",
+      "line": 1,
+      "snippet": "`optimizeContent` function.",
+      "suggestion": "Use a proper AST parser to safely remove comments and imports without corrupting code.",
+      "category": "RELIABILITY",
+      "priority": "medium",
+      "riskMultiplier": 1
+    },
+    {
+      "file": "src/infrastructure/filesystem/FileSystemScanner.ts",
+      "line": 1,
+      "snippet": "const CODE_GLOB_PATTERN = ..., const BASE_IGNORE_LIST = [...]",
+      "suggestion": "Externalize these patterns into a configuration object or allow them to be passed as parameters.",
+      "category": "MAINTAINABILITY",
+      "priority": "low",
+      "riskMultiplier": 1
+    },
+    {
+      "file": "src/infrastructure/filesystem/FileSystemScanner.ts",
+      "line": 1,
+      "snippet": "try { ... } catch (e) { console.warn(...); }",
+      "suggestion": "Aggregate file read errors and report them to the user at the end of the scan, or provide an option to fail.",
+      "category": "RELIABILITY",
+      "priority": "low",
+      "riskMultiplier": 1
+    },
+    {
+      "file": "src/infrastructure/filesystem/ProjectScanner.ts",
+      "line": 1,
+      "snippet": "`CODE_PATTERNS`, `CONFIG_CANDIDATES`, `CI_PATTERNS`, `TREE_SKIP` constants.",
+      "suggestion": "Externalize these patterns into a configurable file (e.g., YAML, JSON).",
+      "category": "MAINTAINABILITY",
+      "priority": "medium",
+      "riskMultiplier": 1
+    },
+    {
+      "file": "src/infrastructure/filesystem/ProjectScanner.ts",
+      "line": 1,
+      "snippet": "content.length > cap ? content.slice(0, cap) + \"\\n…[truncated]\" : content;",
+      "suggestion": "Re-evaluate the `MAX_META_BYTES` limit for different file types. For critical config files, load full content.",
+      "category": "RELIABILITY",
+      "priority": "medium",
+      "riskMultiplier": 1
+    },
+    {
+      "file": "src/infrastructure/filesystem/ProjectScanner.ts",
+      "line": 1,
+      "snippet": "ignore: [\"node_modules private async scanCodeFiles(gitIgnores: string[]): Promise<CodeFile[]> { const ignoreList = [ \"***.test.*\", \"**/__tests__`",
+      "suggestion": "Clarify the intended ignore logic for `glob` and `scanCodeFiles`, ensuring consistency and correctness.",
+      "category": "MAINTAINABILITY",
+      "priority": "low",
+      "riskMultiplier": 1
+    },
+    {
+      "file": "src/infrastructure/filesystem/ProjectScanner.ts",
+      "line": 1,
+      "snippet": "const priority = [...] and sorting logic in `sampleSourceFiles`.",
+      "suggestion": "Consider more sophisticated sampling strategies (e.g., based on file size, commit history) or allow user-defined patterns.",
+      "category": "RELIABILITY",
+      "priority": "low",
+      "riskMultiplier": 1
+    },
+    {
+      "file": "src/infrastructure/persistence/FeedbackStore.ts",
+      "line": 1,
+      "snippet": "try { ... } catch { ... } in `load` and `save`.",
+      "suggestion": "Log errors (e.g., `console.error`) for feedback persistence failures to inform the user and aid debugging.",
+      "category": "RELIABILITY",
+      "priority": "medium",
+      "riskMultiplier": 1
+    },
+    {
+      "file": "src/infrastructure/persistence/FeedbackStore.ts",
+      "line": 1,
+      "snippet": "snippetOrSuggestion.slice(0, 30) in `fingerprintFinding`.",
+      "suggestion": "Use the full snippet/suggestion for fingerprinting, or a more robust method to ensure uniqueness.",
+      "category": "SECURITY",
+      "priority": "medium",
+      "riskMultiplier": 1
+    },
+    {
+      "file": "src/infrastructure/persistence/FeedbackStore.ts",
+      "line": 1,
+      "snippet": "lines.push(...) and lines.join(\"\\n\").",
+      "suggestion": "Consider using template literals for better readability and maintainability of multi-line strings.",
+      "category": "MAINTAINABILITY",
+      "priority": "low",
+      "riskMultiplier": 1
+    },
+    {
+      "file": "src/infrastructure/security/InfraAuditorAdapter.ts",
+      "line": 1,
+      "snippet": "`resolveImports`, `resolveTemplates` implementations, `MAX_IMPORTS`.",
+      "suggestion": "Use a proper module resolver (e.g., from a build tool or language server) to accurately identify imports.",
+      "category": "RELIABILITY",
+      "priority": "medium",
+      "riskMultiplier": 1
+    },
+    {
+      "file": "src/infrastructure/security/InfraAuditorAdapter.ts",
+      "line": 1,
+      "snippet": "`extractInfraFindings` implementation.",
+      "suggestion": "Enhance `InfraAuditResult` to include more specific details about why a pattern was ignored.",
+      "category": "MAINTAINABILITY",
+      "priority": "low",
+      "riskMultiplier": 1
+    },
+    {
+      "file": "src/infrastructure/security/InfraAuditorAdapter.ts",
+      "line": 1,
+      "snippet": "await sleep(300);",
+      "suggestion": "Implement a more robust rate-limiting strategy (e.g., exponential backoff, token bucket) within the `IAiProvider`.",
+      "category": "PERFORMANCE",
+      "priority": "low",
+      "riskMultiplier": 1
+    },
+    {
+      "file": "src/infrastructure/security/InfraAuditorAdapter.ts",
+      "line": 1,
+      "snippet": "`mapSeverityToPriority` function.",
+      "suggestion": "Consider a more declarative mapping (e.g., a `Map` or configuration object) if the mapping logic becomes more complex.",
+      "category": "MAINTAINABILITY",
+      "priority": "low",
+      "riskMultiplier": 1
+    },
+    {
+      "file": "src/presentation/cli/main.ts",
+      "line": 1,
+      "snippet": "try { await container.bootstrapProject.execute(...) } catch (e: any) { spinner.warn(...) }",
+      "suggestion": "Provide an option to fail the review if skill generation is critical, or ensure the AI provider can gracefully handle missing skills.",
+      "category": "RELIABILITY",
+      "priority": "medium",
+      "riskMultiplier": 1
+    },
+    {
+      "file": "src/presentation/cli/main.ts",
+      "line": 1,
+      "snippet": "const logDebug = createLogger(options.debug);",
+      "suggestion": "Implement different log levels (e.g., `debug`, `info`, `warn`, `error`) and allow configuration of the minimum log level.",
+      "category": "RELIABILITY",
+      "priority": "low",
+      "riskMultiplier": 1
+    },
+    {
+      "file": "src/presentation/cli/main.ts",
+      "line": 1,
+      "snippet": "`resolveCredentials` called in two places.",
+      "suggestion": "Extract `resolveCredentials` to a shared utility function or a class method.",
+      "category": "MAINTAINABILITY",
+      "priority": "low",
+      "riskMultiplier": 1
+    },
+    {
+      "file": "src/presentation/cli/main.ts",
+      "line": 1,
+      "snippet": "const { ReportBuilder } = await import(\"../report/ReportBuilder.js\");",
+      "suggestion": "Use a static import for `ReportBuilder` unless there's a clear reason for dynamic loading.",
+      "category": "MAINTAINABILITY",
+      "priority": "low",
+      "riskMultiplier": 1
+    },
+    {
+      "file": "src/application/BootstrapProject.ts",
+      "line": 1,
+      "snippet": "try { await nodefs.mkdir(...); await nodefs.writeFile(...); } catch (e: any) { logDebug(...); skipped++; }",
+      "suggestion": "Elevate critical file write errors to the user, perhaps by re-throwing or providing a more prominent warning.",
+      "category": "RELIABILITY",
+      "priority": "medium",
+      "riskMultiplier": 1
+    },
+    {
+      "file": "src/application/BootstrapProject.ts",
+      "line": 1,
+      "snippet": "private async askYesNo(...)",
+      "suggestion": "Abstract user interaction into an `IUserInteraction` interface to allow different implementations.",
+      "category": "MAINTAINABILITY",
+      "priority": "low",
+      "riskMultiplier": 1
+    },
+    {
+      "file": "src/application/BootstrapProject.ts",
+      "line": 1,
+      "snippet": "MAX_EXISTING_CONTENT_CHARS = 6_000",
+      "suggestion": "Move these constants to a configuration object or class properties that can be injected or set.",
+      "category": "MAINTAINABILITY",
+      "priority": "low",
+      "riskMultiplier": 1
+    },
+    {
+      "file": "src/application/BootstrapProject.ts",
+      "line": 1,
+      "snippet": "Large `console.log` block at the end of `execute`.",
+      "suggestion": "Extract the summary rendering logic into a dedicated formatter or template, possibly using a library for CLI styling.",
+      "category": "MAINTAINABILITY",
+      "priority": "low",
+      "riskMultiplier": 1
+    },
+    {
+      "file": "src/presentation/report/ReportBuilder.ts",
+      "line": 1,
+      "snippet": "`build` method and numerous `render*` helper functions.",
+      "suggestion": "Consider using a templating engine (e.g., Handlebars, EJS) for report generation to separate presentation logic from data processing.",
+      "category": "MAINTAINABILITY",
+      "priority": "medium",
+      "riskMultiplier": 1
+    },
+    {
+      "file": "src/presentation/report/ReportBuilder.ts",
+      "line": 1,
+      "snippet": "`CODE_FINDING_WEIGHTS`, `SECRET_WEIGHTS`, `INFRA_WEIGHTS`, `PRIORITY_ORDER` constants.",
+      "suggestion": "Externalize these weights into a configuration file that can be easily adjusted without code changes.",
+      "category": "MAINTAINABILITY",
+      "priority": "low",
+      "riskMultiplier": 1
+    },
+    {
+      "file": "src/presentation/report/ReportBuilder.ts",
+      "line": 1,
+      "snippet": "`buildAggKey` function.",
+      "suggestion": "Consider a more robust way to identify unique findings, perhaps by hashing a canonical representation of the suggestion and category.",
+      "category": "MAINTAINABILITY",
+      "priority": "low",
+      "riskMultiplier": 1
+    },
+    {
+      "file": "src/presentation/report/ReportBuilder.ts",
+      "line": 1,
+      "snippet": "if (!fix || typeof fix.before !== \"string\" || typeof fix.after !== \"string\")",
+      "suggestion": "Ensure `recommendedFix` is typed to guarantee `before` and `after` are strings, removing the need for these runtime checks.",
+      "category": "MAINTAINABILITY",
+      "priority": "low",
+      "riskMultiplier": 1
+    },
+    {
+      "file": "src/presentation/report/ReportBuilder.ts",
+      "line": 1,
+      "snippet": "static fromCachedResponse(data: CodeReviewResponse): ReportBuilder { ... }",
+      "suggestion": "Consider a dedicated `ReportData` DTO that `CodeReviewResponse` can be mapped to, and `ReportBuilder` can consume.",
+      "category": "MAINTAINABILITY",
+      "priority": "low",
+      "riskMultiplier": 1
+    },
+    {
+      "file": "src/infrastructure/config/LocalSkillRepository.ts",
+      "line": 1,
+      "snippet": "try { ... } catch (e) { }",
+      "suggestion": "Log the error (e.g., `console.warn`) to inform the user about unreadable skill files, or provide an option to fail loudly.",
+      "category": "RELIABILITY",
+      "priority": "medium",
+      "riskMultiplier": 1
+    },
+    {
+      "file": "src/infrastructure/config/LocalSkillRepository.ts",
+      "line": 1,
+      "snippet": "const SKILL_GLOB_PATTERNS = [...]",
+      "suggestion": "Externalize glob patterns into a configuration object.",
+      "category": "MAINTAINABILITY",
+      "priority": "low",
+      "riskMultiplier": 1
+    },
+    {
+      "file": "src/infrastructure/benchmark/CodeBenchmarkAuditor.ts",
+      "line": 1,
+      "snippet": "maintainabilityIndex: Math.max(0, Math.min(100, 100 - complexity.averageComplexity * 5))",
+      "suggestion": "Either remove this metric if it's not based on a standard, or implement a more recognized calculation.",
+      "category": "MAINTAINABILITY",
+      "priority": "low",
+      "riskMultiplier": 1
+    },
+    {
+      "file": "src/infrastructure/benchmark/CodeBenchmarkAuditor.ts",
+      "line": 1,
+      "snippet": "secretFindings: [], infraFindings: []",
+      "suggestion": "`AuditResult` fields are optional. Auditors should only return fields they populate.",
+      "category": "MAINTAINABILITY",
+      "priority": "low",
+      "riskMultiplier": 1
+    },
+    {
+      "file": "src/infrastructure/security/exposureDetector.ts",
+      "line": 1,
+      "snippet": "const PUBLIC_KEYWORDS = [...]",
+      "suggestion": "Allow `PUBLIC_KEYWORDS` to be configurable or extensible. Consider integrating with more sophisticated IaC analysis tools.",
+      "category": "RELIABILITY",
+      "priority": "low",
+      "riskMultiplier": 1
+    },
+    {
+      "file": "src/presentation/cli/DependencyContainer.ts",
+      "line": 1,
+      "snippet": "this.fileScanner = { scan: async (dir: string): Promise<ScannedProject> => { const ctx = await new ProjectScanner(dir).scan(); return projectContextToScannedProject(ctx); }, } satisfies IFileScanner;",
+      "suggestion": "Make `ProjectScanner` directly implement `IFileScanner` and handle the `ProjectContext` to `ScannedProject` conversion internally.",
+      "category": "MAINTAINABILITY",
+      "priority": "low",
+      "riskMultiplier": 1
+    },
+    {
+      "file": "src/presentation/cli/DependencyContainer.ts",
+      "line": 1,
+      "snippet": "function projectContextToScannedProject(ctx: ProjectContext): ScannedProject { ... }",
+      "suggestion": "Consider if `ProjectContext` and `ScannedProject` can be unified or if the mapping can be made more generic.",
+      "category": "MAINTAINABILITY",
+      "priority": "low",
+      "riskMultiplier": 1
+    },
+    {
+      "file": "src/shared/utils/Logger.ts",
+      "line": 1,
+      "snippet": "createLogger(enabled: boolean, prefix = \"DEBUG\")",
+      "suggestion": "Implement a more comprehensive logging utility with multiple log levels and configurable output destinations.",
+      "category": "MAINTAINABILITY",
+      "priority": "low",
+      "riskMultiplier": 1
+    },
+    {
+      "file": "src/infrastructure/config/ConfigurationAuditor.ts",
+      "line": 1,
+      "snippet": "void context; void this.aiProvider; return { infraFindings: [], scannedFiles: [], isPublicFacing: undefined, };",
+      "suggestion": "Either implement the intended configuration auditing logic or remove this auditor if it's not planned. Add a clear comment if it's a future feature.",
+      "category": "MAINTAINABILITY",
+      "priority": "low",
+      "riskMultiplier": 1
+    },
+    {
+      "file": "src/core/interfaces/IAiProvider.ts",
+      "line": 1,
+      "snippet": "`DeepReviewRequest` interface.",
+      "suggestion": "Consider a more structured type for file contents, perhaps `Record<string, { content: string; path: string; /* other metadata */ }>`, if the AI could benefit from more context.",
+      "category": "MAINTAINABILITY",
+      "priority": "low",
+      "riskMultiplier": 1
+    }
+  ],
+  "secretFindings": [],
+  "infraFindings": [
+    {
+      "file": "*.constants.ts",
+      "category": "other",
+      "title": "Ignored pattern detected: *.constants.ts",
+      "description": "The file pattern \"*.constants.ts\" was flagged by the infra audit as typically non-reviewable.",
+      "remediation": "Verify this file does not contain sensitive logic or secrets.",
+      "severity": "low"
+    },
+    {
+      "file": "*.interface.ts",
+      "category": "other",
+      "title": "Ignored pattern detected: *.interface.ts",
+      "description": "The file pattern \"*.interface.ts\" was flagged by the infra audit as typically non-reviewable.",
+      "remediation": "Verify this file does not contain sensitive logic or secrets.",
+      "severity": "low"
+    },
+    {
+      "file": "[repo-level]",
+      "category": "other",
+      "title": "Over-reliance on Regex for Code Analysis",
+      "description": "Multiple core components (`ComplexityAnalyzer`, `DuplicationAnalyzer`, `NamingConventionAnalyzer`, `FileSystemScanner`, `StaticSecurityAuditor`) heavily rely on regular expressions for parsing and analyzing code. This approach is inherently brittle, prone to false positives/negatives, and difficult to maintain or extend as language syntax evolves or new patterns emerge. This is evident in `ComplexityAnalyzer`'s function detection, `NamingConventionAnalyzer`'s declaration parsing, `FileSystemScanner`'s content optimization, and `StaticSecurityAuditor`'s secret detection.",
+      "remediation": "Investigate replacing regex-based code analysis with robust Abstract Syntax Tree (AST) parsers (e.g., `typescript-eslint` parser for TS/JS, or language-specific parsers). This would significantly improve accuracy, reliability, and maintainability of the analysis.",
+      "severity": "high"
+    },
+    {
+      "file": "[repo-level]",
+      "category": "other",
+      "title": "Inconsistent and Silent Error Handling",
+      "description": "Many file system operations (reading/writing cache, skill files, gitignore) and external API calls (OAuth, AI provider) use `try...catch` blocks that silently swallow errors or only log them at a debug level. This can lead to an incomplete or incorrect state without user notification, making debugging difficult and impacting reliability. This is observed in `BootstrapProject` (file writes), `GoogleAuth` (credential load/save), `LocalSkillRepository` (skill file reads), `FileSystemScanner` (file reads), and `FeedbackStore` (feedback load/save).",
+      "remediation": "Implement a consistent error handling strategy. For critical errors, re-throw or provide user-facing messages. For non-critical errors, log at a `warn` or `error` level, not just `debug`, to ensure visibility.",
+      "severity": "high"
+    },
+    {
+      "file": "[repo-level]",
+      "category": "other",
+      "title": "Hardcoded Configuration and Heuristics",
+      "description": "Numerous constants, patterns, and thresholds are hardcoded throughout the codebase, making the application rigid and difficult to configure or extend without modifying source code. This includes glob patterns, ignore lists, risk multipliers, AI prompt sections, and scoring weights. Examples include `ProjectScanner`'s various patterns and limits, `StaticSecurityAuditor`'s secret rules, and `ReportBuilder`'s scoring weights.",
+      "remediation": "Externalize configurable parameters into a dedicated configuration system (e.g., JSON, YAML, environment variables) that can be easily managed and updated by users or administrators.",
+      "severity": "high"
+    },
+    {
+      "file": "[repo-level]",
+      "category": "other",
+      "title": "Brittle Third-Party Integration",
+      "description": "The method of extracting OAuth credentials by parsing the source code of a third-party library (`@google/gemini-cli-core`) is extremely brittle and insecure. Any update to the library could break this functionality, as seen in `src/infrastructure/auth/GoogleAuth.ts`'s `getCoreOAuthCredentials` function.",
+      "remediation": "Obtain OAuth client ID/secret through official channels (Google Cloud Console) and manage them securely (e.g., environment variables, secure configuration). Avoid parsing internal source code of third-party libraries.",
+      "severity": "medium"
+    },
+    {
+      "file": "[repo-level]",
+      "category": "other",
+      "title": "Complex and Inflexible Report Generation",
+      "description": "The `ReportBuilder` uses extensive string concatenation and conditional logic for rendering the final report. This makes the report structure difficult to modify, localize, or adapt to different output formats (e.g., HTML, PDF) without significant refactoring. This is evident in `src/presentation/report/ReportBuilder.ts`'s `build` method and its numerous `render*` helper functions.",
+      "remediation": "Adopt a templating engine (e.g., Handlebars, EJS, Pug) for report generation to separate presentation logic from data, making the report more maintainable and flexible.",
+      "severity": "medium"
+    },
+    {
+      "file": "[repo-level]",
+      "category": "other",
+      "title": "Potential for Inaccurate AI Context",
+      "description": "The project scanning and sampling logic (e.g., `sampleSourceFiles`, `resolveImports`, `resolveTemplates`) relies on heuristics and limits (e.g., `MAX_IMPORTS`, `MAX_META_BYTES`). This could lead to the AI receiving an incomplete or unrepresentative view of the codebase, potentially impacting the quality of its review. This is observed in `ProjectScanner.ts`'s sampling logic and `InfraAuditorAdapter.ts`'s import/template resolution.",
+      "remediation": "Improve sampling and context gathering mechanisms. Consider allowing users to explicitly define critical files/modules for AI context. Re-evaluate truncation limits and import resolution heuristics.",
+      "severity": "medium"
+    },
+    {
+      "file": "[repo-level]",
+      "category": "other",
+      "title": "Unfinished/Malformed Code",
+      "description": "There are instances of incomplete or syntactically incorrect code that could lead to runtime errors. Specifically, `DuplicationAnalyzer.ts` has a commented-out, malformed `if` statement, and `NamingConventionAnalyzer.ts` has a syntactically incorrect `if` statement that will cause a crash.",
+      "remediation": "Conduct a thorough code review and static analysis (linting) to identify and fix all such issues.",
+      "severity": "medium"
+    }
+  ],
+  "isPublicFacing": false,
+  "executiveSummary": {
+    "what": "This codebase appears to be a TypeScript-based code analysis or code review tool, given its focus on benchmarking, findings, and various analyzers like NamingConventionAnalyzer. The general quality is extremely low, indicated by an overall score of 0/100 and 86 code findings, suggesting significant issues across the project.",
+    "impact": "The pervasive high cyclomatic complexity in core application logic, including the review runner and analysis components, will lead to code that is difficult to understand, test, and maintain, significantly increasing the likelihood of bugs and slowing down future development. The architectural over-reliance on fragile regex for code analysis, coupled with inconsistent and silent error handling for critical file system and API operations, will result in unreliable and unpredictable analysis results, potentially providing incorrect feedback to users or failing silently without proper notification. Furthermore, hardcoded configurations and heuristics throughout the codebase will severely limit the application's adaptability and require code changes for minor adjustments, hindering future evolution and scalability.",
+    "risk": "The most critical risks are architectural fragility and a direct security vulnerability. Architecturally, the project's over-reliance on regex for core code analysis is a fundamental flaw, making the system brittle, prone to errors, and difficult to maintain or extend. This is compounded by inconsistent and silent error handling, which severely compromises the application's reliability and makes debugging challenging. From a security perspective, the hardcoding of OAuth client ID/secret for Google authentication is a severe vulnerability that must be remediated immediately by moving these credentials to secure environment variables or a secrets management system to prevent unauthorized access and potential data breaches.",
+    "isPublicFacing": false
+  },
+  "namingConventionScore": 92,
+  "codeDuplicationPercentage": 4.6,
+  "cyclomaticComplexity": 3.3,
+  "maintainabilityIndex": 83.5,
+  "timingStats": {
+    "totalMs": 163004,
+    "scanMs": 65,
+    "auditMs": 154544,
+    "summaryMs": 8386,
+    "timestamp": "2026-03-01T02:40:29.454Z"
+  }
+}

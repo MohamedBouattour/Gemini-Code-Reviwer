@@ -19,6 +19,8 @@ import type {
   TimingStats,
 } from "../entities/ProjectReport.js";
 
+import type { CodeBenchmarkResults } from "../entities/CodeBenchmarkResults.js";
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Supplementary input shape (passed to addInfrastructureResults)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -57,6 +59,9 @@ export interface IReportBuilder {
 
   /** Supply supplementary AI batch sub-scores. */
   setAiScores(scores: AiSubScores): void;
+
+  /** Supply locally computed code quality benchmarks. */
+  setLocalBenchmarks(benchmarks: CodeBenchmarkResults): void;
 
   /** Supply pipeline timing telemetry. */
   setTimingStats(stats: TimingStats): void;
