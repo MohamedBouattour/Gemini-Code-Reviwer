@@ -16,9 +16,7 @@ import {
   CODE_ASSIST_BASE_URL,
 } from "../../shared/constants.js";
 
-// @ts-ignore
 import { Storage } from "@google/gemini-cli-core/dist/src/config/storage.js";
-// @ts-ignore
 import { getAvailablePort } from "@google/gemini-cli-core/dist/src/code_assist/oauth2.js";
 
 // ---------------------------------------------------------------------------
@@ -85,8 +83,10 @@ async function saveCachedCredentials(
       mode: 0o600,
     });
     logDebug(`Saved OAuth credentials to ${credsPath}`);
-  } catch (e: any) {
-    logDebug(`Warning: could not persist credentials: ${e.message}`);
+  } catch (e: unknown) {
+    logDebug(
+      `Warning: could not persist credentials: ${e instanceof Error ? e.message : String(e)}`,
+    );
   }
 }
 
@@ -132,23 +132,26 @@ async function browserOAuthFlow(
               redirect_uri: redirectUri,
             });
             client.setCredentials(tokens);
-            await saveCachedCredentials(tokens as any, logDebug);
+            await saveCachedCredentials(
+              tokens as Record<string, unknown>,
+              logDebug,
+            );
             res.writeHead(HTTP_REDIRECT, { Location: SIGN_IN_SUCCESS_URL });
             res.end();
             resolve(client);
-          } catch (error: any) {
+          } catch (error: unknown) {
             res.writeHead(HTTP_REDIRECT, { Location: SIGN_IN_FAILURE_URL });
             res.end();
             reject(
               new Error(
-                `Failed to exchange short-lived code: ${error.message}`,
+                `Failed to exchange short-lived code: ${error instanceof Error ? error.message : String(error)}`,
               ),
             );
           }
         } else {
           reject(new Error("No authorization code received."));
         }
-      } catch (e: any) {
+      } catch (e: unknown) {
         reject(e);
       } finally {
         server.close();
@@ -160,7 +163,7 @@ async function browserOAuthFlow(
       console.log(`\nOpening browser for Google authentication...\n`);
       try {
         await open(authUrl);
-      } catch (e) {
+      } catch {
         console.log(`\nCould not open browser. Visiter:\n\n${authUrl}\n`);
       }
     });
@@ -178,8 +181,10 @@ async function clearCachedCredentials(
   try {
     await fs.rm(credsPath, { force: true });
     logDebug(`Cleared cached credentials at ${credsPath}`);
-  } catch (e: any) {
-    logDebug(`Could not clear credentials: ${e.message}`);
+  } catch (e: unknown) {
+    logDebug(
+      `Could not clear credentials: ${e instanceof Error ? e.message : String(e)}`,
+    );
   }
 }
 
@@ -193,15 +198,17 @@ export async function authenticate(
     const cached = await loadCachedCredentials(logDebug);
     if (cached) {
       const client = new OAuth2Client(clientId, clientSecret);
-      client.setCredentials(cached as any);
+      client.setCredentials(cached as Record<string, unknown>);
       try {
         const { token } = await client.getAccessToken();
         if (token) {
           logDebug("Reused cached credentials successfully.");
           return client;
         }
-      } catch (e: any) {
-        logDebug(`Cached credentials invalid: ${e.message}`);
+      } catch (e: unknown) {
+        logDebug(
+          `Cached credentials invalid: ${e instanceof Error ? e.message : String(e)}`,
+        );
       }
     }
   } else {
@@ -222,7 +229,7 @@ async function simpleCodeAssistPost(
   body: unknown,
   token: string,
   logDebug: (msg: string) => void,
-): Promise<any> {
+): Promise<unknown> {
   const endpoint = `${CODE_ASSIST_BASE_URL}:${method}`;
   logDebug(`POST ${endpoint}`);
   const res = await fetch(endpoint, {
@@ -269,11 +276,13 @@ export async function resolveCloudProject(
       logDebug,
     );
     cloudaicompanionProject =
-      (loadRes?.cloudaicompanionProject as string | undefined) ?? envProjectId;
+      ((loadRes as Record<string, unknown>)?.cloudaicompanionProject as
+        | string
+        | undefined) ?? envProjectId;
     logDebug(`Resolved project: ${cloudaicompanionProject}`);
-  } catch (e: any) {
+  } catch (e: unknown) {
     logDebug(
-      `loadCodeAssist failed: ${e.message}. Falling back to env project.`,
+      `loadCodeAssist failed: ${e instanceof Error ? e.message : String(e)}. Falling back to env project.`,
     );
     cloudaicompanionProject = envProjectId;
   }

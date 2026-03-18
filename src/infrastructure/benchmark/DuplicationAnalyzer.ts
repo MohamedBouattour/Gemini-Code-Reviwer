@@ -49,7 +49,7 @@ const MAX_TOP_BLOCKS = 10;
 interface NormalisedLine {
   filePath: string;
   originalLine: number; // 1-indexed
-  text: string;         // normalised content
+  text: string; // normalised content
 }
 
 export class DuplicationAnalyzer {
@@ -82,8 +82,10 @@ export class DuplicationAnalyzer {
 
     // Step 2: Build rolling windows and group by hash
     // Map<hash, locations[]>
-    const windowMap = new Map<string, Array<{ filePath: string; startLine: number }>>(
-    );
+    const windowMap = new Map<
+      string,
+      Array<{ filePath: string; startLine: number }>
+    >();
 
     for (let i = 0; i <= allLines.length - MIN_BLOCK_LINES; i++) {
       const window = allLines.slice(i, i + MIN_BLOCK_LINES);
@@ -96,7 +98,9 @@ export class DuplicationAnalyzer {
       if (existing) {
         // Avoid duplicate entries for the same file+line
         const alreadyRecorded = existing.some(
-          (e) => e.filePath === location.filePath && e.startLine === location.startLine,
+          (e) =>
+            e.filePath === location.filePath &&
+            e.startLine === location.startLine,
         );
         if (!alreadyRecorded) existing.push(location);
       } else {
@@ -133,7 +137,9 @@ export class DuplicationAnalyzer {
 
     // Step 4: Sort by impact (lines * occurrences) and cap
     const topBlocks = duplicateBlocks
-      .sort((a, b) => b.lines * b.locations.length - a.lines * a.locations.length)
+      .sort(
+        (a, b) => b.lines * b.locations.length - a.lines * a.locations.length,
+      )
       .slice(0, MAX_TOP_BLOCKS);
 
     return {

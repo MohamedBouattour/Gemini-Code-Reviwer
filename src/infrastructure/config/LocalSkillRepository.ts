@@ -37,7 +37,7 @@ export class LocalSkillRepository implements ISkillRepository {
       try {
         const content = await fs.readFile(file, "utf-8");
         allSkills += `\n\n--- Skill Data from ${file} ---\n${content}\n`;
-      } catch (e) {
+      } catch {
         // Non-fatal: skip unreadable skill files
       }
     }

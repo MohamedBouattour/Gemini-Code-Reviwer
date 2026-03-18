@@ -139,8 +139,10 @@ program
       });
 
       spinner.stop();
-    } catch (e: any) {
-      spinner.fail(`Init failed: ${e.message}`);
+    } catch (e: unknown) {
+      spinner.fail(
+        `Init failed: ${e instanceof Error ? e.message : String(e)}`,
+      );
       process.exit(1);
     }
   });
@@ -237,9 +239,9 @@ program
               },
             });
             spinner.succeed("Auto-Discovery complete.");
-          } catch (e: any) {
+          } catch (e: unknown) {
             spinner.warn(
-              `Auto-Discovery encountered an error (${e.message}) — continuing with review.`,
+              `Auto-Discovery encountered an error (${e instanceof Error ? e.message : String(e)}) — continuing with review.`,
             );
           }
         }
@@ -287,8 +289,10 @@ program
       const mdPath = path.join(outputDir, "code-review-report.md");
       await nodefs.writeFile(mdPath, markdownOutput, "utf-8");
       console.log(`📝 Report written to: ${mdPath}`);
-    } catch (e: any) {
-      spinner.fail(`Review failed: ${e.message}`);
+    } catch (e: unknown) {
+      spinner.fail(
+        `Review failed: ${e instanceof Error ? e.message : String(e)}`,
+      );
       if (options.debug) console.error(e);
       process.exit(1);
     }

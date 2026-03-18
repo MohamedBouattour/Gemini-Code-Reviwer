@@ -110,7 +110,7 @@ export class PythonStrategy implements ILanguageStrategy {
       optimized = optimized.replace(/#.*$/gm, "");
       // 3. Remove Python imports
       optimized = optimized.replace(
-        /^\s*(?:import\s+[\w.,\s]+|from\s+[\w.]+\s+import\s+[\w.,\s*()]+)/gm,
+        /^\s*(?:import\s+[\w., \t]+|from\s+[\w.]+\s+import\s+[\w., \t*()]+)/gm,
         "",
       );
       // 4. Collapse whitespace

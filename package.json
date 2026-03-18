@@ -1,6 +1,6 @@
 {
   "name": "gemini-code-reviewer",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "AI-powered code reviewer using Google Gemini, with smart file scanning and best-practices injection.",
   "type": "module",
   "main": "dist/index.js",
@@ -13,6 +13,7 @@
     "start": "node dist/presentation/cli/main.js",
     "dev": "ts-node --esm src/presentation/cli/main.ts",
     "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
     "lint": "eslint src --ext .ts",
     "format": "prettier --write src",
     "clean": "rimraf dist"
@@ -60,7 +61,7 @@
     "eslint": "^10.0.2",
     "globals": "^17.3.0",
     "jiti": "^2.6.1",
-    "prettier": "^3.3.2",
+    "prettier": "^3.8.1",
     "rimraf": "^5.0.9",
     "ts-node": "^10.9.2",
     "typescript-eslint": "^8.56.1",

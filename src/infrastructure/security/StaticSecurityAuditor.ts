@@ -76,7 +76,7 @@ const SECRET_RULES: SecretRule[] = [
   {
     type: "generic-api-key",
     label: "Generic API Key",
-    pattern: /(?:api[_-]?key|apikey)\s*[:=]\s*["']?([A-Za-z0-9_\-]{20,})/gi,
+    pattern: /(?:api[_-]?key|apikey)\s*[:=]\s*["']?([A-Za-z0-9_-]{20,})/gi,
     severity: "critical",
   },
   {
@@ -128,7 +128,7 @@ const EXCLUSION_PATTERNS: RegExp[] = [
   /^[.]{0,2}\//,
   /^[A-Za-z]:\\/, // Windows absolute path C:\
   /^@[a-z0-9-]+\/[a-z0-9-]+/i, // npm scope e.g. @angular/core
-  /^[\w.\-]+\/[\w.\-/]+$/, // bare path segments
+  /^[\w.-]+\/[\w.-/]+$/, // bare path segments
 
   // Hex colours
   /^#[0-9A-Fa-f]{3,8}$/,
@@ -163,7 +163,7 @@ const EXCLUSION_PATTERNS: RegExp[] = [
   /[a-zA-Z]{4,}\s+[a-zA-Z]{4,}/, // two words separated by space
 
   // Regex-like patterns (often used in source code as string constants)
-  /[\^$|()\[\]{}?*+\\]{3,}/,
+  /[\^$|()[\]{}?*+\\]{3,}/,
 
   // Interpolation / template markers (often high-entropy due to ${})
   /\$\{/,

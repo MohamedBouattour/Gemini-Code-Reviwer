@@ -1,6 +1,10 @@
 // Copyright 2026 Google LLC
 
-import { parse, simpleTraverse } from "@typescript-eslint/typescript-estree";
+import {
+  parse,
+  simpleTraverse,
+  type TSESTree,
+} from "@typescript-eslint/typescript-estree";
 import type {
   ILanguageStrategy,
   FunctionBoundary,
@@ -20,7 +24,7 @@ export class TypeScriptStrategy implements ILanguageStrategy {
       const ast = parse(content, { loc: true, range: true });
       const functions: FunctionBoundary[] = [];
       simpleTraverse(ast, {
-        enter: (node: any) => {
+        enter: (node: TSESTree.Node) => {
           if (node.type === "FunctionDeclaration" && node.id) {
             functions.push({
               name: node.id.name,
@@ -65,7 +69,7 @@ export class TypeScriptStrategy implements ILanguageStrategy {
       const ast = parse(content, { loc: true, range: true });
       let count = 0;
       simpleTraverse(ast, {
-        enter: (node: any) => {
+        enter: (node: TSESTree.Node) => {
           if (!node.loc) return;
           if (node.loc.start.line < startLine || node.loc.start.line > endLine)
             return;
@@ -105,7 +109,7 @@ export class TypeScriptStrategy implements ILanguageStrategy {
       const ast = parse(content, { loc: true, range: true });
       const idents: IdentifierDeclaration[] = [];
       simpleTraverse(ast, {
-        enter: (node: any) => {
+        enter: (node: TSESTree.Node) => {
           if (node.type === "ClassDeclaration" && node.id) {
             idents.push({
               name: node.id.name,
@@ -161,11 +165,13 @@ export class TypeScriptStrategy implements ILanguageStrategy {
       const ast = parse(content, { loc: true, range: true });
       const literals: StringLiteral[] = [];
       simpleTraverse(ast, {
-        enter: (node: any) => {
+        enter: (node: TSESTree.Node) => {
           if (node.type === "Literal" && typeof node.value === "string") {
             literals.push({ value: node.value, line: node.loc.start.line });
           } else if (node.type === "TemplateLiteral") {
-            const val = node.quasis.map((q: any) => q.value.cooked).join("");
+            const val = node.quasis
+              .map((q: TSESTree.TemplateElement) => q.value.cooked)
+              .join("");
             literals.push({ value: val, line: node.loc.start.line });
           }
         },
@@ -182,19 +188,19 @@ export class TypeScriptStrategy implements ILanguageStrategy {
         loc: true,
         range: true,
         comment: true,
-      } as any);
+      });
       const rangesToRemove: [number, number][] = [];
 
       simpleTraverse(ast, {
-        enter: (node: any) => {
+        enter: (node: TSESTree.Node) => {
           if (node.type === "ImportDeclaration") {
             rangesToRemove.push(node.range);
           }
         },
       });
 
-      if ((ast as any).comments) {
-        for (const comment of (ast as any).comments) {
+      if (ast.comments) {
+        for (const comment of ast.comments) {
           rangesToRemove.push(comment.range);
         }
       }

@@ -151,10 +151,7 @@ export class NamingConventionAnalyzer {
             }
             break;
           case "constant": {
-            const looksLikeConstant =
-              /^[A-Z_][A-Z0-9_]*$/.test(id.name) ||
-              id.name === id.name.toUpperCase();
-            if (looksLikeConstant && !isUpperSnakeCase(id.name)) {
+            if (!isUpperSnakeCase(id.name)) {
               violationKind = "constant-not-upper-snake";
               expected = this.toUpperSnakeCase(id.name);
             }

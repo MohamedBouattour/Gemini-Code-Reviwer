@@ -1,7 +1,13 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, type Mocked } from "vitest";
 import { RunCodeReview } from "../src/application/RunCodeReview.js";
 import * as fs from "node:fs/promises";
 import crypto from "node:crypto";
+import type { IFileScanner } from "../src/core/interfaces/IFileScanner.js";
+import type { IAiProvider } from "../src/core/interfaces/IAiProvider.js";
+import type { IProjectAuditor } from "../src/core/interfaces/IProjectAuditor.js";
+import type { ISkillRepository } from "../src/core/interfaces/ISkillRepository.js";
+import type { IReportBuilder } from "../src/core/interfaces/IReportBuilder.js";
+import type { IFeedbackManager } from "../src/application/RunCodeReview.js";
 
 // Mock the node fs to prevent actual file writes during tests
 vi.mock("node:fs/promises", () => ({
@@ -12,76 +18,36 @@ vi.mock("node:fs/promises", () => ({
 }));
 
 describe("RunCodeReview", () => {
-  let mockScanner: any;
-  let mockAiProvider: any;
-  let mockAuditor: any;
-  let mockSkillRepo: any;
-  let mockReportBuilder: any;
-  let mockFeedbackManager: any;
-  let runCodeReview: any;
+  let mockScanner: Mocked<IFileScanner>;
+  let mockAiProvider: Mocked<IAiProvider>;
+  let mockAuditor: Mocked<IProjectAuditor>;
+  let mockSkillRepo: Mocked<ISkillRepository>;
+  let mockReportBuilder: Mocked<IReportBuilder>;
+  let mockFeedbackManager: Mocked<IFeedbackManager>;
+  let runCodeReview: RunCodeReview;
 
   beforeEach(() => {
     mockScanner = {
-      scan: vi.fn().mockResolvedValue({
-        codeFiles: [
-          {
-            filePath: "src/index.ts",
-            originalContent: "const a = 1;",
-            content: "const a = 1;",
-          },
-        ],
-        iacFiles: {},
-        dependencyManifests: {},
-        configFiles: {},
-        ciFiles: {},
-        sampleSources: [],
-        sampleTests: [],
-        directoryTree: "",
-        isPublicFacing: false,
-      }),
-    };
+      scan: vi.fn(),
+    } as unknown as Mocked<IFileScanner>;
 
     mockAiProvider = {
-      reviewProject: vi.fn().mockResolvedValue({
-        codeFindings: [
-          {
-            priority: "high",
-            file: "src/index.ts",
-            line: 1,
-            snippet: "const",
-            suggestion: "no const",
-          },
-        ],
-        subScores: {
-          namingConventionScore: 85,
-          solidPrinciplesScore: 80,
-          codeDuplicationPercentage: 5,
-          cyclomaticComplexity: 3,
-          maintainabilityIndex: 78,
-        },
-      }),
-      reviewInfrastructure: vi.fn().mockResolvedValue({
-        infraFindings: [],
-      }),
-      generateExecutiveSummary: vi.fn().mockResolvedValue({
-        what: "A",
-        impact: "B",
-        risk: "C",
-        isPublicFacing: false,
-      }),
-    };
+      auditInfra: vi.fn(),
+      deepReview: vi.fn(),
+      generateExecutiveSummary: vi.fn(),
+      reviewProject: vi.fn(), // Required by interface
+      reviewInfrastructure: vi.fn(), // Required by interface
+      generateSkills: vi.fn(), // Required by interface
+    } as unknown as Mocked<IAiProvider>;
 
     mockAuditor = {
       name: "Mock Auditor",
-      audit: vi.fn().mockResolvedValue({
-        secretFindings: [],
-        infraFindings: [],
-      }),
-    };
+      audit: vi.fn(),
+    } as unknown as Mocked<IProjectAuditor>;
 
     mockSkillRepo = {
-      loadSkillsContext: vi.fn().mockResolvedValue("Skills context"),
-    };
+      loadSkillsContext: vi.fn(),
+    } as unknown as Mocked<ISkillRepository>;
 
     mockReportBuilder = {
       addAiFindings: vi.fn(),
@@ -90,15 +56,16 @@ describe("RunCodeReview", () => {
       setAiScores: vi.fn(),
       setExecutiveSummary: vi.fn(),
       setTimingStats: vi.fn(),
-      calculateFinalScore: vi.fn().mockReturnValue(85),
-      build: vi.fn().mockReturnValue("# Report"),
-    };
+      calculateFinalScore: vi.fn(),
+      build: vi.fn(),
+      setLocalBenchmarks: vi.fn(),
+    } as unknown as Mocked<IReportBuilder>;
 
     mockFeedbackManager = {
       buildSystemPromptSuffix: vi.fn().mockReturnValue(""),
       hasFeedback: false,
       isFalsePositive: vi.fn().mockReturnValue(false),
-    };
+    } as unknown as Mocked<IFeedbackManager>;
 
     runCodeReview = new RunCodeReview(
       mockScanner,
@@ -114,7 +81,7 @@ describe("RunCodeReview", () => {
 
   describe("execute()", () => {
     it("runs the split review pipeline successfully", async () => {
-      (fs.readFile as any).mockRejectedValue(new Error("File not found"));
+      vi.mocked(fs.readFile).mockRejectedValue(new Error("File not found"));
 
       // Re-bind mocks after clearAllMocks
       mockScanner.scan.mockResolvedValue({
@@ -133,13 +100,6 @@ describe("RunCodeReview", () => {
         sampleTests: [],
         directoryTree: "",
         isPublicFacing: false,
-      });
-      mockAiProvider.reviewProject.mockResolvedValue({
-        codeFindings: [],
-        subScores: {},
-      });
-      mockAiProvider.reviewInfrastructure.mockResolvedValue({
-        infraFindings: [],
       });
       mockAiProvider.generateExecutiveSummary.mockResolvedValue({
         what: "A",
@@ -163,9 +123,9 @@ describe("RunCodeReview", () => {
       });
 
       expect(result.report).toBeDefined();
-      // Split AI call — one for code, one for infra
-      expect(mockAiProvider.reviewProject).toHaveBeenCalledTimes(1);
-      expect(mockAiProvider.reviewInfrastructure).toHaveBeenCalledTimes(1);
+      // Verify orchestration: auditor was called and summary was generated
+      expect(mockAuditor.audit).toHaveBeenCalledTimes(1);
+      expect(mockAiProvider.generateExecutiveSummary).toHaveBeenCalledTimes(1);
     });
 
     it("returns cached report without calling AI if no files changed", async () => {
@@ -193,7 +153,7 @@ describe("RunCodeReview", () => {
         maintainabilityIndex: 100,
       };
 
-      (fs.readFile as any).mockResolvedValue(JSON.stringify(cacheState));
+      vi.mocked(fs.readFile).mockResolvedValue(JSON.stringify(cacheState));
       mockScanner.scan.mockResolvedValue({
         codeFiles: [
           {
@@ -219,12 +179,12 @@ describe("RunCodeReview", () => {
       });
 
       expect(result.report.fileHashes["src/index.ts"]).toBe(hash);
-      // Should NOT call AI for unchanged files
-      expect(mockAiProvider.reviewProject).not.toHaveBeenCalled();
+      // Should NOT call auditor for unchanged files
+      expect(mockAuditor.audit).not.toHaveBeenCalled();
     });
 
     it("makes exactly one AI call per type for changed file set", async () => {
-      (fs.readFile as any).mockRejectedValue(new Error("No cache"));
+      vi.mocked(fs.readFile).mockRejectedValue(new Error("No cache"));
 
       mockScanner.scan.mockResolvedValue({
         codeFiles: [
@@ -240,14 +200,12 @@ describe("RunCodeReview", () => {
         directoryTree: "",
         isPublicFacing: false,
       });
-      mockAiProvider.reviewProject.mockResolvedValue({
-        codeFindings: [],
-        subScores: {},
+      mockAiProvider.generateExecutiveSummary.mockResolvedValue({
+        what: "summary",
+        impact: "impact",
+        risk: "risk",
+        isPublicFacing: false,
       });
-      mockAiProvider.reviewInfrastructure.mockResolvedValue({
-        infraFindings: [],
-      });
-      mockAiProvider.generateExecutiveSummary.mockResolvedValue(undefined);
       mockSkillRepo.loadSkillsContext.mockResolvedValue("");
       mockAuditor.audit.mockResolvedValue({
         secretFindings: [],
@@ -263,9 +221,87 @@ describe("RunCodeReview", () => {
         logDebug: () => {},
       });
 
-      // Split AI calls
-      expect(mockAiProvider.reviewProject).toHaveBeenCalledTimes(1);
-      expect(mockAiProvider.reviewInfrastructure).toHaveBeenCalledTimes(1);
+      // Verify orchestration
+      expect(mockAuditor.audit).toHaveBeenCalledTimes(1);
+      expect(mockAiProvider.generateExecutiveSummary).toHaveBeenCalledTimes(1);
+    });
+
+    it("resolves line numbers correctly for complex snippets", async () => {
+      mockScanner.scan.mockResolvedValue({
+        codeFiles: [
+          {
+            filePath: "src/algo.ts",
+            originalContent: "line1\nline2\n  line3   \nline4",
+            content: "line1\nline2\n  line3   \nline4",
+          } as any,
+        ],
+        iacFiles: {},
+        dependencyManifests: {},
+        configFiles: {},
+        ciFiles: {},
+        sampleSources: [],
+        sampleTests: [],
+        directoryTree: "",
+        isPublicFacing: false,
+      });
+
+      mockAuditor.audit.mockResolvedValue({
+        codeFindings: [
+          {
+            file: "src/algo.ts",
+            snippet: "  line3   ",
+            suggestion: "fix",
+            type: "SECURITY",
+            severity: "HIGH",
+          } as any,
+        ],
+        secretFindings: [],
+        infraFindings: [],
+      });
+
+      vi.mocked(fs.readFile).mockRejectedValue(new Error());
+
+      const result = await runCodeReview.execute({
+        baseDir: "test-dir",
+        logDebug: () => {},
+      });
+
+      expect(result.report.codeFindings[0].line).toBe(3);
+    });
+
+    it("applies risk multipliers based on file path", async () => {
+      mockScanner.scan.mockResolvedValue({
+        codeFiles: [
+          { filePath: "src/api/handler.ts", originalContent: "x", content: "x" } as any,
+          { filePath: "__tests__/logic.test.ts", originalContent: "x", content: "x" } as any,
+        ],
+        iacFiles: {},
+        dependencyManifests: {},
+        configFiles: {},
+        ciFiles: {},
+        sampleSources: [],
+        sampleTests: [],
+        directoryTree: "",
+        isPublicFacing: false,
+      });
+
+      mockAuditor.audit.mockResolvedValue({
+        codeFindings: [
+          { file: "src/api/handler.ts", snippet: "x", suggestion: "s", type: "SECURITY", severity: "HIGH" } as any,
+          { file: "__tests__/logic.test.ts", snippet: "x", suggestion: "s", type: "SECURITY", severity: "HIGH" } as any,
+        ],
+        secretFindings: [],
+        infraFindings: [],
+      });
+
+      vi.mocked(fs.readFile).mockRejectedValue(new Error());
+      const result = await runCodeReview.execute({ baseDir: ".", logDebug: () => {} });
+
+      const apiFinding = result.report.codeFindings.find(f => f.file.includes("api"));
+      const testFinding = result.report.codeFindings.find(f => f.file.includes("test"));
+
+      expect(apiFinding?.riskMultiplier).toBe(2.0);
+      expect(testFinding?.riskMultiplier).toBe(0.3);
     });
   });
 });

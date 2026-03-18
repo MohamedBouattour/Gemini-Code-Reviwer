@@ -19,7 +19,7 @@ export class JavaStrategy implements ILanguageStrategy {
       const functions: FunctionBoundary[] = [];
       // public/private/protected [static] [final] <T> ReturnType name(args) {
       const methodRe =
-        /^\s*(?:(?:public|private|protected|static|final|synchronized|abstract|default|native)\s+)*(?:<[^>]*>\s*)?[\w<>\[\].]+\s+([\w$]+)\s*\([^)]*\)\s*(?:throws\s+[\w$.,\s]+)?\s*\{/;
+        /(?:(?:public|private|protected|static|final|synchronized|abstract|default|native)\s+)*[\w<>[\].]+\s+([\w$]+)\s*\([^)]*\)\s*(?:throws\s+[\w$.,\s]+)?\s*\{/;
 
       for (let i = 0; i < lines.length; i++) {
         const match = methodRe.exec(lines[i]);
@@ -66,7 +66,7 @@ export class JavaStrategy implements ILanguageStrategy {
         /^\s*(?:(?:public|private|protected|static|final)\s+)*interface\s+([\w$]+)\b/;
       // Simplified method regex for identifier extraction
       const methodRe =
-        /^\s*(?:(?:public|private|protected|static|final|synchronized|abstract|default)\s+)*(?:<[^>]*>\s*)?[\w<>\[\].]+\s+([\w$]+)\s*\([^)]*\)/;
+        /(?:(?:public|private|protected|static|final|synchronized|abstract|default|native)\s+)*[\w<>[\].]+\s+([\w$]+)\s*\([^)]*\)/;
 
       for (let i = 0; i < lines.length; i++) {
         const line = lines[i];

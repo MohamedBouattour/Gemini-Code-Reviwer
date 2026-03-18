@@ -184,7 +184,8 @@ export class RunCodeReview {
 
     // ── Step 4: Skills context ────────────────────────────────────────────────
     onProgress("Loading skills context...");
-    const skillsContext = await this.skillRepository.loadSkillsContext(baseDir);
+    const skillsContext =
+      (await this.skillRepository.loadSkillsContext(baseDir)) ?? "";
     logDebug(`Skills context: ${skillsContext.length} chars.`);
     const feedbackSuffix = this.feedbackManager.buildSystemPromptSuffix();
     void feedbackSuffix; // passed to auditors via context if needed

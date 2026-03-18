@@ -182,19 +182,6 @@ const TEST_SOURCE_PATTERNS = [
   "**/*Spec.java",
 ];
 
-const BUSINESS_SOURCE_PATTERNS = [
-  "src/**/*.service.ts",
-  "src/**/*.controller.ts",
-  "src/**/*.component.ts",
-  "src/**/*.service.js",
-  "src/**/*.controller.js",
-  "src/**/*.ts",
-  "src/**/*.js",
-  "src/**/*.java",
-  "lib/**/*.ts",
-  "app/**/*.ts",
-];
-
 const MAX_META_BYTES = 8192; // config / package.json cap
 const MAX_SAMPLE_BYTES = 6144; // sample code cap
 
@@ -248,7 +235,7 @@ async function buildDirectoryTree(
     depth: number,
   ): Promise<void> {
     if (depth > maxDepth) return;
-    let entries: string[] = [];
+    let entries: string[];
     try {
       entries = await nodefs.readdir(dir);
     } catch {
@@ -392,7 +379,7 @@ export class ProjectScanner {
       codeFiles.push({
         filePath: path.relative(this.baseDir, hit),
         originalContent: rawContent,
-        content: optimizeContent(rawContent),
+        content: optimizeContent(hit, rawContent),
       });
     }
 

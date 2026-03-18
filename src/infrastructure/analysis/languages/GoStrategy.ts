@@ -93,7 +93,7 @@ export class GoStrategy implements ILanguageStrategy {
         const matchIndex = match.index ?? 0;
         const line =
           (content.slice(0, matchIndex).match(/\n/g) ?? []).length + 1;
-        let val = match[0].slice(1, -1);
+        const val = match[0].slice(1, -1);
         literals.push({ value: val, line });
       }
       return literals;

@@ -523,8 +523,10 @@ export class GeminiProvider implements IAiProvider {
         risk: parsed.risk ?? "Risk unavailable.",
         isPublicFacing: input.isPublicFacing,
       };
-    } catch (e: any) {
-      this.logDebug(`generateExecutiveSummary failed: ${e.message}`);
+    } catch (e: unknown) {
+      this.logDebug(
+        `generateExecutiveSummary failed: ${e instanceof Error ? e.message : String(e)}`,
+      );
       return undefined;
     }
   }

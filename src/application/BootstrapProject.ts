@@ -192,8 +192,10 @@ export class BootstrapProject {
         writeResults.push(`   ${action}  ${skillName}/SKILL.md`);
         written++;
         logDebug(`Wrote .agents/skills/${skillName}/SKILL.md`);
-      } catch (e: any) {
-        logDebug(`Failed to write ${skillName}: ${e.message}`);
+      } catch (e: unknown) {
+        logDebug(
+          `Failed to write ${skillName}: ${e instanceof Error ? e.message : String(e)}`,
+        );
         skipped++;
       }
     }
@@ -380,7 +382,7 @@ ${summaryLines.map((l) => `║  ${l}`).join("\n")}
 
     for (const skillName of SKILL_NAMES) {
       const filePath = path.join(skillsDir, skillName, "SKILL.md");
-      let status: SkillStatus = "missing";
+      let status: SkillStatus;
       let existingContent: string | undefined;
 
       try {

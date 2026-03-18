@@ -131,7 +131,9 @@ export class AiCallLogger {
 
     // Fire-and-forget — intentionally not awaited
     this.writeRecord(filePath, record).catch((err: Error) => {
-      this.logDebug(`[AiCallLogger] Failed to write ${filename}: ${err.message}`);
+      this.logDebug(
+        `[AiCallLogger] Failed to write ${filename}: ${err.message}`,
+      );
     });
 
     this.logDebug(
@@ -140,7 +142,10 @@ export class AiCallLogger {
     );
   }
 
-  private async writeRecord(filePath: string, record: AiCallRecord): Promise<void> {
+  private async writeRecord(
+    filePath: string,
+    record: AiCallRecord,
+  ): Promise<void> {
     await fs.mkdir(this.logDir, { recursive: true });
     await fs.writeFile(filePath, JSON.stringify(record, null, 2), "utf-8");
   }

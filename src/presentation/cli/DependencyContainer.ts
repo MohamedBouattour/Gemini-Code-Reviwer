@@ -80,13 +80,19 @@ export class DependencyContainer {
   readonly reportBuilder: IReportBuilder;
 
   private constructor(config: ContainerConfig) {
-    const { accessToken, cloudProject, logDebug, feedbackManager, baseDir } = config;
+    const { accessToken, cloudProject, logDebug, feedbackManager, baseDir } =
+      config;
 
     // AI call logs → <baseDir>/gemini-code-reviewer/ai-calls/
     const outputDir = path.join(baseDir, "gemini-code-reviewer");
 
     // Layer 1: AI
-    this.aiProvider = new GeminiProvider(accessToken, cloudProject, logDebug, outputDir);
+    this.aiProvider = new GeminiProvider(
+      accessToken,
+      cloudProject,
+      logDebug,
+      outputDir,
+    );
 
     // Layer 2: Filesystem
     this.fileScanner = {

@@ -19,7 +19,7 @@ export class CSharpStrategy implements ILanguageStrategy {
       const functions: FunctionBoundary[] = [];
       // [Modifiers] ReturnType MethodName(args)
       const methodRe =
-        /^\s*(?:(?:public|private|protected|internal|static|virtual|override|async|sealed|extern)\s+)+[\w<>\[\].?]+\s+([\w$]+)\s*\(/;
+        /\b(?:public|private|protected|internal|static|virtual|override|async|sealed|extern)\b[\s\w<>[\].?]+\s+([\w$]+)\s*\(/;
 
       for (let i = 0; i < lines.length; i++) {
         const match = methodRe.exec(lines[i]);
@@ -66,7 +66,7 @@ export class CSharpStrategy implements ILanguageStrategy {
       const interfaceRe =
         /^\s*(?:(?:public|private|protected|internal)\s+)*interface\s+([\w$]+)\b/;
       const methodRe =
-        /^\s*(?:(?:public|private|protected|internal|static|virtual|override|async|sealed)\s+)+[\w<>\[\].?]+\s+([\w$]+)\s*\(/;
+        /\b(?:public|private|protected|internal|static|virtual|override|async|sealed|extern)\b[\s\w<>[\].?]+\s+([\w$]+)\s*\(/;
 
       for (let i = 0; i < lines.length; i++) {
         const line = lines[i];

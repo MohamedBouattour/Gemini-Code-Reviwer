@@ -130,7 +130,12 @@ export interface InfraAuditResult {
  */
 export interface DeepReviewIssue {
   severity: "HIGH" | "MEDIUM" | "LOW";
-  type: "SECURITY" | "RELIABILITY" | "MAINTAINABILITY" | "PERFORMANCE" | "CONFIG";
+  type:
+    | "SECURITY"
+    | "RELIABILITY"
+    | "MAINTAINABILITY"
+    | "PERFORMANCE"
+    | "CONFIG";
   description: string;
   /** Short code evidence (≤ 15 words). */
   evidence: string;
